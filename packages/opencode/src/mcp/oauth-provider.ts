@@ -5,14 +5,24 @@ import type {
   OAuthClientInformation,
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/sdk/shared/auth.js"
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
 import * as Log from "@opencode-ai/core/util/log"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 const log = Log.create({ service: "mcp.oauth" })
 
 const OAUTH_CALLBACK_PORT = 19876
 const OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
+
+export const AcceptedTokens = {
+  kya: "kya",
+  pay: "pay",
+  "kya-pay": "kya-pay",
+} as const
+
+export type AcceptedTokenType = (typeof AcceptedTokens)[keyof typeof AcceptedTokens]
 
 export interface McpOAuthConfig {
   clientId?: string
@@ -20,6 +30,28 @@ export interface McpOAuthConfig {
   scope?: string
   callbackPort?: number
   redirectUri?: string
+
+  /**
+   * KYA (Know Your Agent) support.
+   *
+   * When the Resource Authorization Server advertises
+   * `authorization_grant_profiles_supported: ["kya"]` in either
+   * `/.well-known/oauth-authorization-server` or `/.well-known/openid-configuration`,
+   * OpenCode can use a KYA assertion to obtain an OAuth access token.
+   */
+  kya?: {
+    /** API key sent as the `skyfire-api-key` request header. */
+    apiKey?: string
+
+    /** JSON payload `type` field. */
+    tokenType?: AcceptedTokenType
+
+    buyerTag?: string
+    tokenAmount?: number
+    sellerServiceId?: string
+    /** unix seconds */
+    expiresAt?: number
+  }
 }
 
 export interface McpOAuthCallbacks {
@@ -33,9 +65,65 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
-  ) {}
+  ) {
+    // The MCP SDK treats the auth provider's "server URL" as the *origin* where
+    // OAuth discovery endpoints live (/.well-known/*). Our MCP transport URLs
+    // often include the MCP RPC path (e.g. http://host:port/mcp). Normalize
+    // that to the origin so discovery doesn't 404 on /mcp/.well-known/*.
+    try {
+      const parsed = new URL(this.serverUrl)
+      this.serverUrl = parsed.origin
+    } catch {
+      // Leave as-is; the outer connection code already validates URLs.
+    }
+  }
+
+  /**
+   * The MCP SDK's StreamableHTTP transport will try OAuth discovery against the
+   * MCP origin by requesting `/.well-known/oauth-authorization-server`.
+   *
+   * Our KYA mock (and some real deployments) host OAuth metadata on a separate
+   * auth origin and advertise it via `WWW-Authenticate: ... authorization-uri="..."`
+   * on 401 responses from the MCP endpoint.
+   *
+   * To avoid a confusing "Invalid OAuth error response" when the MCP origin
+   * correctly returns plain-text 404 for `/.well-known/*`, we proactively trigger
+   * a 401 against the MCP endpoint and let the SDK parse the advertised metadata.
+   */
+  private async ensureDiscoveryViaWwwAuthenticate(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 2_000)
+
+    try {
+      const url = new URL(this.serverUrl)
+      url.pathname = "/mcp"
+      url.search = ""
+      url.hash = ""
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
+        signal: controller.signal,
+      })
+
+      if (res.status === 401) {
+        // Throwing the SDK's UnauthorizedError is enough for it to parse
+        // `WWW-Authenticate` and continue the OAuth discovery flow.
+        throw new UnauthorizedError("MCP server requires authentication")
+      }
+    } catch {
+      // This is a best-effort preflight; ignore failures and let the SDK do its normal flow.
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
 
   get redirectUrl(): string {
+    // KYA uses a non-interactive jwt-bearer grant; if we provide a redirect URL
+    // the MCP SDK will force an interactive authorization_code flow.
+    if (this.config.kya) return ""
+
     if (this.config.redirectUri) {
       return this.config.redirectUri
     }
@@ -56,6 +144,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
+    await this.ensureDiscoveryViaWwwAuthenticate()
+
     // Check config first (pre-registered client)
     if (this.config.clientId) {
       return {
@@ -193,6 +283,60 @@ export class McpOAuthProvider implements OAuthClientProvider {
         break
     }
   }
+
+  /**
+   * Optional hook for MCP SDKs that support custom grant profiles.
+   *
+   * If the connected Resource Authorization Server supports the KYA profile,
+   * we can obtain an access token without an interactive authorization_code flow.
+   */
+  async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
+    const supportsKya = authorizationGrantProfilesSupported(metadata).includes("kya")
+    if (!supportsKya) return undefined
+    if (!this.config.kya) return undefined
+
+    const assertion = await requestKyaAssertion(this.config.kya)
+    const tokenEndpoint = tokenEndpointFromMetadata(metadata)
+    if (!tokenEndpoint) {
+      throw new Error(
+        `Resource Authorization Server metadata for ${this.mcpName} advertises KYA but has no token_endpoint`,
+      )
+    }
+
+    const exchanged = await exchangeKyaForAccessToken({
+      tokenEndpoint,
+      clientId: this.config.clientId,
+      clientSecret: this.config.clientSecret,
+      assertion,
+      scope: this.config.scope,
+    })
+
+    await this.saveTokens(exchanged)
+    return exchanged
+  }
+
+  /**
+   * Provide a non-interactive token request for servers that advertise the KYA
+   * grant profile.
+   *
+   * The MCP SDK prefers prepareTokenRequest() over opening an interactive
+   * /authorize flow.
+   */
+  async prepareTokenRequest(scope?: string): Promise<URLSearchParams | undefined> {
+    if (!this.config.kya) return undefined
+
+    // For KYA, failing to mint/exchange the assertion should be surfaced
+    // directly; "fall back" produces a confusing SDK error because KYA disables
+    // the interactive redirect flow.
+    const assertion = await requestKyaAssertion(this.config.kya)
+    const params = new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    })
+    const effectiveScope = scope ?? this.config.scope
+    if (effectiveScope) params.set("scope", effectiveScope)
+    return params
+  }
 }
 
 export { OAUTH_CALLBACK_PORT, OAUTH_CALLBACK_PATH }
@@ -213,5 +357,129 @@ export function parseRedirectUri(redirectUri?: string): { port: number; path: st
     return { port, path }
   } catch {
     return { port: OAUTH_CALLBACK_PORT, path: OAUTH_CALLBACK_PATH }
+  }
+}
+
+function authorizationGrantProfilesSupported(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object") return []
+  const obj = metadata as Record<string, unknown>
+  const arr = obj["authorization_grant_profiles_supported"]
+  if (!Array.isArray(arr)) return []
+  return arr.filter((v): v is string => typeof v === "string")
+}
+
+function tokenEndpointFromMetadata(metadata: unknown): string | undefined {
+  if (!metadata || typeof metadata !== "object") return undefined
+  const obj = metadata as Record<string, unknown>
+  const tokenEndpoint = obj["token_endpoint"]
+  if (typeof tokenEndpoint === "string") return tokenEndpoint
+  return undefined
+}
+
+async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): Promise<string> {
+  const issuerUrl = Flag.OPENCODE_KYA_CREATE_TOKEN_URL
+  if (!issuerUrl) {
+    throw new Error("Missing KYA issuer URL (set experimental.kya.create_token_url or OPENCODE_KYA_CREATE_TOKEN_URL)")
+  }
+
+  const apiKey = config.apiKey ?? Flag.OPENCODE_SKYFIRE_API_KEY
+  const sellerServiceId = config.sellerServiceId
+
+  if (!sellerServiceId) {
+    throw new Error("Missing kya.sellerServiceId (must be a valid UUID)")
+  }
+
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+  if (!uuid.test(sellerServiceId)) {
+    throw new Error(`Invalid kya.sellerServiceId (must be a UUID): ${sellerServiceId}`)
+  }
+
+  const payload = {
+    type: config.tokenType,
+    buyerTag: config.buyerTag,
+    expiresAt: config.expiresAt ?? Math.floor((Date.now() + 5 * 60 * 1000) / 1000),
+    sellerServiceId,
+  }
+
+  log.info("requesting kya assertion", {
+    issuer: issuerUrl,
+    tokenType: config.tokenType,
+    buyerTag: config.buyerTag,
+    sellerServiceId,
+  })
+
+  const res = await fetch(issuerUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(apiKey ? { "skyfire-api-key": apiKey } : {}),
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    throw new Error(`KYA issuer request failed (${res.status}): ${await res.text()}`)
+  }
+  const data = (await res.json()) as unknown
+  if (!data || typeof data !== "object") {
+    throw new Error("KYA issuer returned non-object JSON")
+  }
+  const token = (data as Record<string, unknown>)["token"]
+  if (typeof token !== "string" || token.length === 0) {
+    throw new Error("KYA issuer response missing `token` string")
+  }
+  return token
+}
+
+async function exchangeKyaForAccessToken(input: {
+  tokenEndpoint: string
+  clientId?: string
+  clientSecret?: string
+  assertion: string
+  scope?: string
+}): Promise<OAuthTokens> {
+  log.info("exchanging kya assertion for oauth token", {
+    tokenEndpoint: input.tokenEndpoint,
+    hasClientId: !!input.clientId,
+    hasScope: !!input.scope,
+  })
+
+  const body = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    assertion: input.assertion,
+    ...(input.scope ? { scope: input.scope } : {}),
+    ...(input.clientId ? { client_id: input.clientId } : {}),
+    ...(input.clientSecret ? { client_secret: input.clientSecret } : {}),
+  })
+
+  const res = await fetch(input.tokenEndpoint, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body,
+  })
+  if (!res.ok) {
+    log.warn("oauth token exchange failed", { tokenEndpoint: input.tokenEndpoint, status: res.status })
+    throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
+  }
+  const json = (await res.json()) as Record<string, unknown>
+  const accessToken = json["access_token"]
+  const refreshToken = json["refresh_token"]
+  const expiresIn = json["expires_in"]
+  const scope = json["scope"]
+  const tokenType = json["token_type"]
+  if (typeof accessToken !== "string") throw new Error("OAuth token exchange missing access_token")
+  if (tokenType && tokenType !== "Bearer") throw new Error(`Unexpected token_type: ${String(tokenType)}`)
+
+  log.info("oauth token exchange succeeded", {
+    tokenEndpoint: input.tokenEndpoint,
+    accessTokenPrefix: accessToken.slice(0, 12),
+  })
+
+  return {
+    access_token: accessToken,
+    token_type: "Bearer",
+    refresh_token: typeof refreshToken === "string" ? refreshToken : undefined,
+    expires_in: typeof expiresIn === "number" ? expiresIn : undefined,
+    scope: typeof scope === "string" ? scope : undefined,
   }
 }

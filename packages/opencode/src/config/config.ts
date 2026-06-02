@@ -287,6 +287,14 @@ export const Info = Schema.Struct({
   ),
   experimental: Schema.optional(
     Schema.Struct({
+      kya: Schema.optional(
+        Schema.Struct({
+          create_token_url: Schema.optional(Schema.String).annotate({
+            description:
+              "Global KYA token issuer (Skyfire) endpoint used when exchanging KYA for OAuth tokens. If unset, OPENCODE_KYA_CREATE_TOKEN_URL is used.",
+          }),
+        }),
+      ),
       disable_paste_summary: Schema.optional(Schema.Boolean),
       batch_tool: Schema.optional(Schema.Boolean).annotate({ description: "Enable the batch tool" }),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({
@@ -387,6 +395,18 @@ export const layer = Layer.effect(
     const env = yield* Env.Service
     const npmSvc = yield* Npm.Service
     const http = yield* HttpClient.HttpClient
+
+    // Ensure experimental config can supply global env-like defaults.
+    // This keeps feature toggles wired in one place and avoids threading
+    // config through deep call stacks.
+    const applyExperimentalEnvDefaults = (info: Info) => {
+      const url = info.experimental?.kya?.create_token_url
+      if (!url) return info
+      if (!process.env.OPENCODE_KYA_CREATE_TOKEN_URL) {
+        process.env.OPENCODE_KYA_CREATE_TOKEN_URL = url
+      }
+      return info
+    }
 
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
@@ -608,6 +628,9 @@ export const layer = Layer.effect(
         result.agent = result.agent || {}
         result.mode = result.mode || {}
         result.plugin = result.plugin || []
+
+        // Apply global defaults derived from config.
+        applyExperimentalEnvDefaults(result)
 
         const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
 

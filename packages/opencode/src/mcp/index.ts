@@ -327,6 +327,9 @@ export const layer = Layer.effect(
             scope: oauthConfig?.scope,
             callbackPort: oauthConfig?.callbackPort,
             redirectUri: oauthConfig?.redirectUri,
+            // KYA is intentionally opaque to the MCP core service — it is only
+            // used by the OAuth client provider when RAS metadata opts in.
+            ...(oauthConfig && "kya" in oauthConfig ? { kya: (oauthConfig as any).kya } : {}),
           },
           {
             onRedirect: async (url) => {
@@ -337,22 +340,43 @@ export const layer = Layer.effect(
         )
       }
 
-      const transports: Array<{ name: string; transport: TransportWithAuth }> = [
-        {
-          name: "StreamableHTTP",
-          transport: new StreamableHTTPClientTransport(url, {
-            authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
-          }),
-        },
-        {
-          name: "SSE",
-          transport: new SSEClientTransport(url, {
-            authProvider,
-            requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
-          }),
-        },
-      ]
+      const transports: Array<{ name: string; transport: TransportWithAuth }> =
+        mcp.transport === "streamable_http"
+          ? [
+              {
+                name: "StreamableHTTP",
+                transport: new StreamableHTTPClientTransport(url, {
+                  authProvider,
+                  requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+                }),
+              },
+            ]
+          : mcp.transport === "sse"
+            ? [
+                {
+                  name: "SSE",
+                  transport: new SSEClientTransport(url, {
+                    authProvider,
+                    requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+                  }),
+                },
+              ]
+            : [
+                {
+                  name: "StreamableHTTP",
+                  transport: new StreamableHTTPClientTransport(url, {
+                    authProvider,
+                    requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+                  }),
+                },
+                {
+                  name: "SSE",
+                  transport: new SSEClientTransport(url, {
+                    authProvider,
+                    requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+                  }),
+                },
+              ]
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       let lastStatus: Status | undefined
@@ -809,6 +833,7 @@ export const layer = Layer.effect(
           clientSecret: oauthConfig?.clientSecret,
           scope: oauthConfig?.scope,
           redirectUri: effectiveRedirectUri,
+          ...(oauthConfig && "kya" in oauthConfig ? { kya: (oauthConfig as any).kya } : {}),
         },
         {
           onRedirect: async (url) => {
