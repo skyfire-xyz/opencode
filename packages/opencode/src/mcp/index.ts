@@ -306,6 +306,13 @@ export const layer = Layer.effect(
       key: string,
       mcp: ConfigMCP.Info & { type: "remote" },
     ) {
+      log.info("connecting", {
+        key,
+        url: mcp.url,
+        transportPreference: "transport" in mcp ? (mcp as any).transport : undefined,
+        oauth: mcp.oauth === false ? false : "enabled",
+      })
+
       const oauthDisabled = mcp.oauth === false
       const oauthConfig = typeof mcp.oauth === "object" ? mcp.oauth : undefined
       const url = remoteURL(key, mcp.url)
@@ -318,6 +325,13 @@ export const layer = Layer.effect(
       let authProvider: McpOAuthProvider | undefined
 
       if (!oauthDisabled) {
+        log.info("oauth provider enabled", {
+          key,
+          hasClientId: !!oauthConfig?.clientId,
+          hasClientSecret: !!oauthConfig?.clientSecret,
+          hasScope: !!oauthConfig?.scope,
+          kyaConfigured: !!(oauthConfig && "kya" in oauthConfig),
+        })
         authProvider = new McpOAuthProvider(
           key,
           mcp.url,
@@ -382,6 +396,7 @@ export const layer = Layer.effect(
       let lastStatus: Status | undefined
 
       for (const { name, transport } of transports) {
+        log.info("transport connect attempt", { key, transport: name, timeout: connectTimeout })
         const result = yield* connectTransport(transport, connectTimeout).pipe(
           Effect.map((client) => ({ client, transportName: name })),
           Effect.catch((error) => {

@@ -22,8 +22,22 @@ const issuedTokens = new Set<string>()
 // In-memory OAuth client registrations
 let clientSeq = 0
 
+function header(req: http.IncomingMessage, key: string) {
+  const value = req.headers[key.toLowerCase()]
+  if (typeof value === "string") return value
+  return value?.[0]
+}
+
+function prefix(value: string, n: number) {
+  if (value.length <= n) return value
+  return value.slice(0, n)
+}
+
 const authServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", authOrigin)
+
+  // eslint-disable-next-line no-console
+  console.log("mock oauth request", { method: req.method, path: url.pathname })
 
   // --- OAuth / OIDC discovery (Resource Authorization Server metadata) ---
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
@@ -62,6 +76,8 @@ const authServer = http.createServer((req, res) => {
 
       clientSeq += 1
       const clientId = `mock_client_${clientSeq}`
+      // eslint-disable-next-line no-console
+      console.log("mock oauth dynamic registration", { clientId })
       return json(res, 201, {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -81,6 +97,13 @@ const authServer = http.createServer((req, res) => {
       const params = new URLSearchParams(raw)
       const grantType = params.get("grant_type")
       const assertion = params.get("assertion")
+
+      // eslint-disable-next-line no-console
+      console.log("mock oauth token request", {
+        grantType,
+        hasAssertion: !!assertion,
+        assertionPrefix: assertion ? prefix(assertion, 18) : undefined,
+      })
 
       if (grantType !== "urn:ietf:params:oauth:grant-type:jwt-bearer") {
         return json(res, 400, { error: "unsupported_grant_type" })
@@ -122,6 +145,13 @@ const authServer = http.createServer((req, res) => {
 const mcpServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", mcpOrigin)
 
+  // eslint-disable-next-line no-console
+  console.log("mock mcp request", {
+    method: req.method,
+    path: url.pathname,
+    authorizationPrefix: prefix(header(req, "authorization") ?? "", 24) || undefined,
+  })
+
   // --- OAuth Protected Resource Metadata (RFC 9728) ---
   // The MCP SDK uses this to discover the authorization server for a protected
   // resource URL. Without it, it falls back to treating the MCP origin itself
@@ -161,6 +191,8 @@ const mcpServer = http.createServer((req, res) => {
       const method = parsed?.method
 
       if (method === "initialize") {
+        // eslint-disable-next-line no-console
+        console.log("mock mcp initialize")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -173,6 +205,8 @@ const mcpServer = http.createServer((req, res) => {
       }
 
       if (method === "tools/list") {
+        // eslint-disable-next-line no-console
+        console.log("mock mcp tools/list")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
