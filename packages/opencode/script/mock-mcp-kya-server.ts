@@ -169,9 +169,19 @@ const mcpServer = http.createServer((req, res) => {
     const auth = req.headers.authorization
     const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined
     if (!token || !issuedTokens.has(token)) {
+      const challenge = `Bearer realm=\"mcp\", authorization-uri=\"${authOrigin}/.well-known/oauth-authorization-server\"`
+
+      // eslint-disable-next-line no-console
+      console.log("mock mcp unauthorized", {
+        hasAuthHeader: !!auth,
+        tokenPrefix: token ? prefix(token, 18) : undefined,
+        issuedTokenCount: issuedTokens.size,
+        wwwAuthenticate: challenge,
+      })
+
       // Signal OAuth discovery via standard metadata locations.
       return text(res, 401, "Unauthorized", {
-        "www-authenticate": `Bearer realm=\"mcp\", authorization-uri=\"${authOrigin}/.well-known/oauth-authorization-server\"`,
+        "www-authenticate": challenge,
       })
     }
 
@@ -189,6 +199,13 @@ const mcpServer = http.createServer((req, res) => {
 
       const id = parsed?.id ?? 1
       const method = parsed?.method
+
+      // eslint-disable-next-line no-console
+      console.log("mock mcp jsonrpc", {
+        id,
+        method,
+        tool: typeof parsed?.params?.name === "string" ? parsed.params.name : undefined,
+      })
 
       if (method === "initialize") {
         // eslint-disable-next-line no-console
@@ -210,7 +227,78 @@ const mcpServer = http.createServer((req, res) => {
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
-          result: { tools: [] },
+          result: {
+            tools: [
+              {
+                name: "echo",
+                description: "Echo back the provided text (mock tool)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    text: { type: "string", description: "Text to echo" },
+                  },
+                  required: ["text"],
+                  additionalProperties: false,
+                },
+              },
+              {
+                name: "add",
+                description: "Add two numbers together (mock tool)",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    a: { type: "number", description: "First number" },
+                    b: { type: "number", description: "Second number" },
+                  },
+                  required: ["a", "b"],
+                  additionalProperties: false,
+                },
+              },
+            ],
+          },
+        })
+      }
+
+      if (method === "tools/call") {
+        const name = parsed?.params?.name
+        const args = parsed?.params?.arguments ?? {}
+
+        // eslint-disable-next-line no-console
+        console.log("mock mcp tools/call", { name })
+
+        if (name === "echo") {
+          const textValue = typeof args.text === "string" ? args.text : ""
+          return json(res, 200, {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [{ type: "text", text: textValue }],
+              isError: false,
+            },
+          })
+        }
+
+        if (name === "add") {
+          const a = typeof args.a === "number" ? args.a : Number(args.a)
+          const b = typeof args.b === "number" ? args.b : Number(args.b)
+          const sum = (Number.isFinite(a) ? a : 0) + (Number.isFinite(b) ? b : 0)
+          return json(res, 200, {
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [{ type: "text", text: String(sum) }],
+              isError: false,
+            },
+          })
+        }
+
+        return json(res, 200, {
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: `Unknown tool: ${String(name)}` }],
+            isError: true,
+          },
         })
       }
 
