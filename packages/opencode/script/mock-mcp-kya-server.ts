@@ -19,8 +19,9 @@ const authOrigin = `http://127.0.0.1:${authPort}`
 const mcpOrigin = `http://127.0.0.1:${mcpPort}`
 
 const mockSigningSecret = process.env.MOCK_OAUTH_JWT_SECRET ?? "mock-oauth-dev-secret"
-const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://api-qa.skyfire.xyz/.well-known/jwks.json"
-const mockSkyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? "https://api-qa.skyfire.xyz"
+const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://app-qa.skyfire.xyz/.well-known/jwks.json"
+// Skyfire QA KYA assertions currently use iss=https://app-qa.skyfire.xyz
+const mockSkyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? "https://app-qa.skyfire.xyz"
 
 type TokenEntry = {
   accessToken: string
@@ -86,10 +87,26 @@ function verifyJwt(token: string, secret: string) {
 const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
 
 async function verifyKyaAssertion(assertion: string) {
+  // Skyfire QA KYA assertions use a non-URL audience (a UUID-like client ID).
+  // For the demo, we validate signature + iss + exp, and let claim-shape checks
+  // handle the rest.
   const result = await jwtVerify(assertion, skyfireJwks, {
     issuer: mockSkyfireIssuer,
-    audience: authOrigin,
   })
+
+  const payload = result.payload as unknown as Record<string, unknown>
+  // eslint-disable-next-line no-console
+  console.log("mock oauth verified kya assertion", {
+    iss: payload.iss,
+    aud: payload.aud,
+    sub: typeof payload.sub === "string" ? payload.sub : undefined,
+    jti: typeof payload.jti === "string" ? payload.jti : undefined,
+    iat: typeof payload.iat === "number" ? payload.iat : undefined,
+    exp: typeof payload.exp === "number" ? payload.exp : undefined,
+    hasAid: !!(payload as any).aid,
+    hasHid: !!(payload as any).hid,
+  })
+
   return result.payload
 }
 
@@ -114,7 +131,7 @@ const authServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", authOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("mock oauth request", { method: req.method, path: url.pathname })
+  console.log("05 oauth request", { method: req.method, path: url.pathname })
 
   // --- OAuth / OIDC discovery (Resource Authorization Server metadata) ---
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
@@ -164,7 +181,7 @@ const authServer = http.createServer((req, res) => {
       clientSeq += 1
       const clientId = `mock_client_${clientSeq}`
       // eslint-disable-next-line no-console
-      console.log("mock oauth dynamic registration", { clientId })
+      console.log("05.1 oauth dynamic registration", { clientId })
       return json(res, 201, {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -187,7 +204,7 @@ const authServer = http.createServer((req, res) => {
       const assertion = params.get("assertion")
 
       // eslint-disable-next-line no-console
-      console.log("mock oauth token request", {
+      console.log("07 oauth token request (jwt-bearer)", {
         grantType,
         hasAssertion: !!assertion,
         assertionPrefix: assertion ? prefix(assertion, 18) : undefined,
@@ -204,12 +221,17 @@ const authServer = http.createServer((req, res) => {
         .then((payload) => {
           const assertionPayload = payload as unknown as Record<string, unknown>
           checkAndRememberAssertionJti(assertionPayload)
-          const hid = typeof (assertionPayload as any).hid === "string" ? (assertionPayload as any).hid : undefined
-          const aid = typeof (assertionPayload as any).aid === "string" ? (assertionPayload as any).aid : undefined
+          // Skyfire QA uses aid/hid as objects (not strings). For the demo we just
+          // require they exist and pull a stable identifier from them.
+          const hidObj = (assertionPayload as any).hid
+          const aidObj = (assertionPayload as any).aid
+          const hidEmail = typeof hidObj?.email === "string" ? hidObj.email : undefined
+          const aidName = typeof aidObj?.name === "string" ? aidObj.name : undefined
           const apd = typeof (assertionPayload as any).apd === "string" ? (assertionPayload as any).apd : undefined
+          const ori = typeof (assertionPayload as any).ori === "string" ? (assertionPayload as any).ori : undefined
 
           const now = Math.floor(Date.now() / 1000)
-          if (!hid || !aid) {
+          if (!hidObj || !aidObj) {
             json(res, 400, { error: "invalid_request", error_description: "missing required aid/hid claims" })
             return
           }
@@ -220,10 +242,12 @@ const authServer = http.createServer((req, res) => {
 
           // Map KYA claims onto a principal record (demo mapping).
           // - hid -> user
-          // - aid/apd -> client metadata
-          const user = hid
-          const clientMetadata: Record<string, string> = { aid }
+          // - aid + platform metadata -> client metadata
+          const user = hidEmail ?? JSON.stringify(hidObj)
+          const clientMetadata: Record<string, string> = {}
+          if (aidName) clientMetadata.aid = aidName
           if (apd) clientMetadata.apd = apd
+          if (ori) clientMetadata.ori = ori
 
           // Issue access token whose aud equals the protected resource canonical URI.
           const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin
@@ -254,7 +278,7 @@ const authServer = http.createServer((req, res) => {
           })
 
           // eslint-disable-next-line no-console
-          console.log("mock oauth issued access token", {
+          console.log("08 oauth issued access token", {
             grantType,
             accessTokenPrefix: prefix(access, 20),
             scope,
@@ -332,7 +356,7 @@ const mcpServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", mcpOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("mock mcp request", {
+  console.log("01 mcp request", {
     method: req.method,
     path: url.pathname,
     authorizationPrefix: prefix(header(req, "authorization") ?? "", 24) || undefined,
@@ -343,6 +367,13 @@ const mcpServer = http.createServer((req, res) => {
   // resource URL. Without it, it falls back to treating the MCP origin itself
   // as the authorization server (and will try POST /register on 8787).
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
+    // eslint-disable-next-line no-console
+    console.log("03 protected resource metadata")
+    // eslint-disable-next-line no-console
+    console.log("04 protected resource metadata response", {
+      resource: mcpOrigin,
+      authorization_servers: [authOrigin],
+    })
     return json(res, 200, {
       resource: mcpOrigin,
       authorization_servers: [authOrigin],
@@ -369,7 +400,7 @@ const mcpServer = http.createServer((req, res) => {
       const challenge = `Bearer realm=\"mcp\", authorization-uri=\"${authOrigin}/.well-known/oauth-authorization-server\"`
 
       // eslint-disable-next-line no-console
-      console.log("mock mcp unauthorized", {
+      console.log("02 mcp unauthorized", {
         hasAuthHeader: !!auth,
         tokenPrefix: token ? prefix(token, 18) : undefined,
         issuedTokenCount: issuedTokens.size,
@@ -409,7 +440,7 @@ const mcpServer = http.createServer((req, res) => {
       const method = parsed?.method
 
       // eslint-disable-next-line no-console
-      console.log("mock mcp jsonrpc", {
+      console.log("09 mcp jsonrpc", {
         id,
         method,
         tool: typeof parsed?.params?.name === "string" ? parsed.params.name : undefined,
@@ -417,7 +448,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "initialize") {
         // eslint-disable-next-line no-console
-        console.log("mock mcp initialize")
+        console.log("09.0 mcp initialize")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -431,7 +462,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "tools/list") {
         // eslint-disable-next-line no-console
-        console.log("mock mcp tools/list")
+        console.log("09.1 mcp tools/list")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -472,7 +503,7 @@ const mcpServer = http.createServer((req, res) => {
         const args = parsed?.params?.arguments ?? {}
 
         // eslint-disable-next-line no-console
-        console.log("mock mcp tools/call", { name })
+        console.log("09.2 mcp tools/call", { name })
 
         if (name === "echo") {
           const textValue = typeof args.text === "string" ? args.text : ""

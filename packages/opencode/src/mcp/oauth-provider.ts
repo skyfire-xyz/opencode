@@ -421,7 +421,7 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     sellerServiceId,
   }
 
-  log.info("requesting kya assertion", {
+  log.info("06 requesting kya assertion", {
     issuer: issuerUrl,
     tokenType: config.tokenType,
     buyerTag: config.buyerTag,
@@ -438,10 +438,12 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     },
     body: JSON.stringify(payload),
   })
+
   if (!res.ok) {
     throw new Error(`KYA issuer request failed (${res.status}): ${await res.text()}`)
   }
   const data = (await res.json()) as unknown
+  log.info("received response from kya issuer", { data })
   if (!data || typeof data !== "object") {
     throw new Error("KYA issuer returned non-object JSON")
   }
@@ -450,7 +452,7 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     throw new Error("KYA issuer response missing `token` string")
   }
 
-  log.info("received kya assertion", {
+  log.info("06.1 received kya assertion", {
     issuer: issuerUrl,
     tokenPrefix: token.slice(0, 16),
   })
@@ -464,9 +466,8 @@ async function exchangeKyaForAccessToken(input: {
   assertion: string
   scope?: string
 }): Promise<OAuthTokens> {
-  log.info("exchanging kya assertion for oauth token", {
+  log.info("07 exchanging kya assertion for oauth token", {
     tokenEndpoint: input.tokenEndpoint,
-    hasClientId: !!input.clientId,
     hasScope: !!input.scope,
     assertionPrefix: input.assertion.slice(0, 16),
   })
@@ -485,7 +486,7 @@ async function exchangeKyaForAccessToken(input: {
     body,
   })
   if (!res.ok) {
-    log.warn("oauth token exchange failed", { tokenEndpoint: input.tokenEndpoint, status: res.status })
+    log.warn("08 oauth token exchange failed", { tokenEndpoint: input.tokenEndpoint, status: res.status })
     throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
   }
   const json = (await res.json()) as Record<string, unknown>
@@ -497,7 +498,7 @@ async function exchangeKyaForAccessToken(input: {
   if (typeof accessToken !== "string") throw new Error("OAuth token exchange missing access_token")
   if (tokenType && tokenType !== "Bearer") throw new Error(`Unexpected token_type: ${String(tokenType)}`)
 
-  log.info("oauth token exchange succeeded", {
+  log.info("08 oauth token exchange succeeded", {
     tokenEndpoint: input.tokenEndpoint,
     accessTokenPrefix: accessToken.slice(0, 12),
   })
