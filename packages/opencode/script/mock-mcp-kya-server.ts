@@ -96,7 +96,7 @@ async function verifyKyaAssertion(assertion: string) {
 
   const payload = result.payload as unknown as Record<string, unknown>
   // eslint-disable-next-line no-console
-  console.log("mock oauth verified kya assertion", {
+  console.log("verifyKyaAssertion: verified", {
     iss: payload.iss,
     aud: payload.aud,
     sub: typeof payload.sub === "string" ? payload.sub : undefined,
@@ -131,7 +131,7 @@ const authServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", authOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("05 oauth request", { method: req.method, path: url.pathname })
+  console.log("authServer: request", { method: req.method, path: url.pathname })
 
   // --- OAuth / OIDC discovery (Resource Authorization Server metadata) ---
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
@@ -181,7 +181,7 @@ const authServer = http.createServer((req, res) => {
       clientSeq += 1
       const clientId = `mock_client_${clientSeq}`
       // eslint-disable-next-line no-console
-      console.log("05.1 oauth dynamic registration", { clientId })
+      console.log("authServer: register", { clientId })
       return json(res, 201, {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -204,7 +204,7 @@ const authServer = http.createServer((req, res) => {
       const assertion = params.get("assertion")
 
       // eslint-disable-next-line no-console
-      console.log("07 oauth token request (jwt-bearer)", {
+      console.log("authServer: token(jwt-bearer) request", {
         grantType,
         hasAssertion: !!assertion,
         assertionPrefix: assertion ? prefix(assertion, 18) : undefined,
@@ -278,7 +278,7 @@ const authServer = http.createServer((req, res) => {
           })
 
           // eslint-disable-next-line no-console
-          console.log("08 oauth issued access token", {
+          console.log("authServer: token issued", {
             grantType,
             accessTokenPrefix: prefix(access, 20),
             scope,
@@ -356,7 +356,7 @@ const mcpServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", mcpOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("01 mcp request", {
+  console.log("mcpServer: request", {
     method: req.method,
     path: url.pathname,
     authorizationPrefix: prefix(header(req, "authorization") ?? "", 24) || undefined,
@@ -368,9 +368,7 @@ const mcpServer = http.createServer((req, res) => {
   // as the authorization server (and will try POST /register on 8787).
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
     // eslint-disable-next-line no-console
-    console.log("03 protected resource metadata")
-    // eslint-disable-next-line no-console
-    console.log("04 protected resource metadata response", {
+    console.log("mcpServer: oauth-protected-resource", {
       resource: mcpOrigin,
       authorization_servers: [authOrigin],
     })
@@ -386,36 +384,70 @@ const mcpServer = http.createServer((req, res) => {
     const auth = req.headers.authorization
     const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined
     const scopeRequired = "mcp"
+    const expectedIssuer = authOrigin
     const now = Math.floor(Date.now() / 1000)
+
+    // eslint-disable-next-line no-console
+    console.log("mcpServer: verifyJwt", {
+      hasToken: !!token,
+      tokenPrefix: token ? prefix(token, 18) : undefined,
+    })
+
     const tokenPayload = token ? verifyJwt(token, mockSigningSecret) : undefined
+
+    // eslint-disable-next-line no-console
+    console.log("mcpServer: verifyJwt result", {
+      verified: !!tokenPayload,
+      iss: typeof tokenPayload?.iss === "string" ? tokenPayload.iss : undefined,
+      aud: typeof tokenPayload?.aud === "string" ? tokenPayload.aud : undefined,
+      sub: typeof tokenPayload?.sub === "string" ? prefix(tokenPayload.sub, 24) : undefined,
+      exp: typeof tokenPayload?.exp === "number" ? tokenPayload.exp : undefined,
+      scope: typeof tokenPayload?.scope === "string" ? tokenPayload.scope : undefined,
+    })
+
     const tokenScope = typeof tokenPayload?.scope === "string" ? tokenPayload.scope : undefined
     const tokenExp = typeof tokenPayload?.exp === "number" ? tokenPayload.exp : undefined
     const tokenAud = typeof tokenPayload?.aud === "string" ? tokenPayload.aud : undefined
+    const tokenIss = typeof tokenPayload?.iss === "string" ? tokenPayload.iss : undefined
+    const tokenSub = typeof tokenPayload?.sub === "string" ? tokenPayload.sub : undefined
 
     const hasScope = !!tokenScope?.split(/\s+/).includes(scopeRequired)
     const notExpired = typeof tokenExp === "number" ? tokenExp > now : false
     const audOk = tokenAud === (process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin)
+    const issOk = tokenIss === expectedIssuer
+    const subOk = typeof tokenSub === "string" && tokenSub.length > 0
 
-    if (!token || !tokenPayload || !notExpired || !audOk || !hasScope) {
+    if (!token || !tokenPayload || !notExpired || !audOk || !issOk || !subOk || !hasScope) {
       const challenge = `Bearer realm=\"mcp\", authorization-uri=\"${authOrigin}/.well-known/oauth-authorization-server\"`
 
+      const reason = (() => {
+        switch (true) {
+          case !token:
+            return "missing_token" as const
+          case !tokenPayload:
+            return "invalid_signature" as const
+          case !notExpired:
+            return "expired" as const
+          case !audOk:
+            return "invalid_audience" as const
+          case !issOk:
+            return "invalid_issuer" as const
+          case !subOk:
+            return "missing_subject" as const
+          case !hasScope:
+            return "missing_scope" as const
+          default:
+            return "unknown" as const
+        }
+      })()
+
       // eslint-disable-next-line no-console
-      console.log("02 mcp unauthorized", {
+      console.log("mcpServer: unauthorized", {
         hasAuthHeader: !!auth,
         tokenPrefix: token ? prefix(token, 18) : undefined,
         issuedTokenCount: issuedTokens.size,
         wwwAuthenticate: challenge,
-        reason: !token
-          ? "missing_token"
-          : !tokenPayload
-            ? "invalid_signature"
-            : !notExpired
-              ? "expired"
-              : !audOk
-                ? "invalid_audience"
-                : !hasScope
-                  ? "missing_scope"
-                  : "unknown",
+        reason,
       })
 
       // Signal OAuth discovery via standard metadata locations.
@@ -423,6 +455,15 @@ const mcpServer = http.createServer((req, res) => {
         "www-authenticate": challenge,
       })
     }
+
+    // eslint-disable-next-line no-console
+    console.log("mcpServer: authorized", {
+      iss: tokenIss,
+      aud: tokenAud,
+      sub: tokenSub ? prefix(tokenSub, 24) : undefined,
+      scope: tokenScope,
+      exp: tokenExp,
+    })
 
     let raw = ""
     req.on("data", (c) => (raw += c))
@@ -440,7 +481,7 @@ const mcpServer = http.createServer((req, res) => {
       const method = parsed?.method
 
       // eslint-disable-next-line no-console
-      console.log("09 mcp jsonrpc", {
+      console.log("mcpServer: jsonrpc", {
         id,
         method,
         tool: typeof parsed?.params?.name === "string" ? parsed.params.name : undefined,
@@ -448,7 +489,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "initialize") {
         // eslint-disable-next-line no-console
-        console.log("09.0 mcp initialize")
+        console.log("mcpServer: initialize")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -462,7 +503,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "tools/list") {
         // eslint-disable-next-line no-console
-        console.log("09.1 mcp tools/list")
+        console.log("mcpServer: tools/list")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -503,7 +544,7 @@ const mcpServer = http.createServer((req, res) => {
         const args = parsed?.params?.arguments ?? {}
 
         // eslint-disable-next-line no-console
-        console.log("09.2 mcp tools/call", { name })
+        console.log("mcpServer: tools/call", { name })
 
         if (name === "echo") {
           const textValue = typeof args.text === "string" ? args.text : ""

@@ -2,28 +2,21 @@
   "$schema": "https://opencode.ai/config.json",
   "provider": {},
   "permission": {},
-  "experimental": {
-    // NOTE: the online JSON schema at https://opencode.ai/config.json may lag
-    // behind the local dev build. This key is supported by this repo branch.
-    "kya": {
-      "create_token_url": "https://api-qa.skyfire.xyz/api/v1/tokens",
-    },
-  },
   "mcp": {
-  "mock-kya": {
-    "type": "remote",
-    "url": "http://127.0.0.1:8787/mcp",
-    "transport": "streamable_http",
-    "oauth": {
-      "kya": {
-        "tokenType": "kya",
-        "buyerTag": "Playground-mw2o5fsoja",
-        "tokenAmount": 1,
-        "sellerServiceId": "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+    "mock-kya": {
+      "type": "remote",
+      "url": "http://127.0.0.1:8787/mcp",
+      "transport": "streamable_http",
+      "oauth": {
+        "kya": {
+          "tokenType": "kya",
+          "buyerTag": "Playground-mw2o5fsoja",
+          "tokenAmount": 1,
+          "sellerServiceId": "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+        }
       }
     }
-  }
-},  
+  },  
   "tools": {
     "github-triage": false,
     "github-pr-search": false,

@@ -293,7 +293,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
     const profiles = authorizationGrantProfilesSupported(metadata)
     const supportsKya = profiles.includes("kya")
-    log.info("evaluating metadata for KYA", {
+    log.info("getTokensForMetadata: evaluating metadata for KYA", {
       mcpName: this.mcpName,
       supportsKya,
       hasKyaConfig: !!this.config.kya,
@@ -336,7 +336,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     // For KYA, failing to mint/exchange the assertion should be surfaced
     // directly; "fall back" produces a confusing SDK error because KYA disables
     // the interactive redirect flow.
-    log.info("preparing jwt-bearer token request", {
+    log.info("prepareTokenRequest: preparing jwt-bearer token request", {
       mcpName: this.mcpName,
       hasScope: !!(scope ?? this.config.scope),
     })
@@ -421,7 +421,7 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     sellerServiceId,
   }
 
-  log.info("06 requesting kya assertion", {
+  log.info("requestKyaAssertion: requesting kya assertion", {
     issuer: issuerUrl,
     tokenType: config.tokenType,
     buyerTag: config.buyerTag,
@@ -443,7 +443,7 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     throw new Error(`KYA issuer request failed (${res.status}): ${await res.text()}`)
   }
   const data = (await res.json()) as unknown
-  log.info("received response from kya issuer", { data })
+  log.info("requestKyaAssertion: received response from kya issuer", { hasToken: !!(data as any)?.token })
   if (!data || typeof data !== "object") {
     throw new Error("KYA issuer returned non-object JSON")
   }
@@ -452,7 +452,7 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     throw new Error("KYA issuer response missing `token` string")
   }
 
-  log.info("06.1 received kya assertion", {
+  log.info("requestKyaAssertion: received kya assertion", {
     issuer: issuerUrl,
     tokenPrefix: token.slice(0, 16),
   })
@@ -466,7 +466,7 @@ async function exchangeKyaForAccessToken(input: {
   assertion: string
   scope?: string
 }): Promise<OAuthTokens> {
-  log.info("07 exchanging kya assertion for oauth token", {
+  log.info("exchangeKyaForAccessToken: exchanging kya assertion for oauth token", {
     tokenEndpoint: input.tokenEndpoint,
     hasScope: !!input.scope,
     assertionPrefix: input.assertion.slice(0, 16),
@@ -486,7 +486,10 @@ async function exchangeKyaForAccessToken(input: {
     body,
   })
   if (!res.ok) {
-    log.warn("08 oauth token exchange failed", { tokenEndpoint: input.tokenEndpoint, status: res.status })
+    log.warn("exchangeKyaForAccessToken: oauth token exchange failed", {
+      tokenEndpoint: input.tokenEndpoint,
+      status: res.status,
+    })
     throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
   }
   const json = (await res.json()) as Record<string, unknown>
@@ -498,7 +501,7 @@ async function exchangeKyaForAccessToken(input: {
   if (typeof accessToken !== "string") throw new Error("OAuth token exchange missing access_token")
   if (tokenType && tokenType !== "Bearer") throw new Error(`Unexpected token_type: ${String(tokenType)}`)
 
-  log.info("08 oauth token exchange succeeded", {
+  log.info("exchangeKyaForAccessToken: oauth token exchange succeeded", {
     tokenEndpoint: input.tokenEndpoint,
     accessTokenPrefix: accessToken.slice(0, 12),
   })

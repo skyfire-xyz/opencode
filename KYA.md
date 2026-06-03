@@ -37,8 +37,8 @@ When you connect an MCP server named `mock-kya`, OpenCode does (simplified):
    - Response points to the mock OAuth server on `8788`.
 
 3. **Dynamic client registration (if needed)**
-   - `POST http://127.0.0.1:8788/register`
-   - Saves client ID/secret for later token requests.
+
+- (Removed) This demo flow does not require Dynamic Client Registration.
 
 4. **KYA assertion minted by Skyfire**
    - OpenCode calls Skyfire issuer endpoint to mint a KYA assertion:
@@ -191,9 +191,10 @@ You should see `mock-kya` become `connected`.
 
 With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs during the flow, including:
 
-- `requesting kya assertion` (Skyfire call)
-- `exchanging kya assertion for oauth token` (POST to `http://127.0.0.1:8788/token`)
-- `oauth token exchange succeeded` (prints access token prefix only)
+- `requestKyaAssertion: requesting kya assertion` (Skyfire call)
+- `requestKyaAssertion: received kya assertion` (prints assertion prefix only)
+- `exchangeKyaForAccessToken: exchanging kya assertion for oauth token` (POST to `http://127.0.0.1:8788/token`)
+- `exchangeKyaForAccessToken: oauth token exchange succeeded` (prints access token prefix only)
 - `saved oauth tokens`
 
 These are emitted from `packages/opencode/src/mcp/oauth-provider.ts`.
@@ -218,13 +219,15 @@ bun run packages/opencode/script/mock-mcp-kya-server.ts
 
 Look for logs like:
 
-- `mock oauth request` (every request)
-- `mock oauth dynamic registration`
-- `mock oauth token request`
-- `mock oauth issued access token`
-- `mock mcp request` (every request)
-- `mock mcp initialize`
-- `mock mcp tools/list`
+- `authServer: request` (every request)
+- `authServer: token(jwt-bearer) request`
+- `verifyKyaAssertion: verified`
+- `authServer: token issued`
+- `mcpServer: request` (every request)
+- `mcpServer: unauthorized`
+- `mcpServer: authorized`
+- `mcpServer: initialize`
+- `mcpServer: tools/list`
 
 ### 2) Start OpenCode server with logs
 
