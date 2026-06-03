@@ -291,7 +291,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
    * we can obtain an access token without an interactive authorization_code flow.
    */
   async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
-    const supportsKya = authorizationGrantProfilesSupported(metadata).includes("kya")
+    const profiles = authorizationGrantProfilesSupported(metadata)
+    const supportsKya = profiles.includes("kya")
+    log.info("evaluating metadata for KYA", {
+      mcpName: this.mcpName,
+      supportsKya,
+      hasKyaConfig: !!this.config.kya,
+      profiles: profiles.slice(0, 8),
+    })
+
     if (!supportsKya) return undefined
     if (!this.config.kya) return undefined
 
@@ -328,6 +336,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
     // For KYA, failing to mint/exchange the assertion should be surfaced
     // directly; "fall back" produces a confusing SDK error because KYA disables
     // the interactive redirect flow.
+    log.info("preparing jwt-bearer token request", {
+      mcpName: this.mcpName,
+      hasScope: !!(scope ?? this.config.scope),
+    })
+
     const assertion = await requestKyaAssertion(this.config.kya)
     const params = new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -413,6 +426,8 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
     tokenType: config.tokenType,
     buyerTag: config.buyerTag,
     sellerServiceId,
+    hasApiKey: !!apiKey,
+    expiresAt: payload.expiresAt,
   })
 
   const res = await fetch(issuerUrl, {
@@ -434,6 +449,11 @@ async function requestKyaAssertion(config: NonNullable<McpOAuthConfig["kya"]>): 
   if (typeof token !== "string" || token.length === 0) {
     throw new Error("KYA issuer response missing `token` string")
   }
+
+  log.info("received kya assertion", {
+    issuer: issuerUrl,
+    tokenPrefix: token.slice(0, 16),
+  })
   return token
 }
 
@@ -448,6 +468,7 @@ async function exchangeKyaForAccessToken(input: {
     tokenEndpoint: input.tokenEndpoint,
     hasClientId: !!input.clientId,
     hasScope: !!input.scope,
+    assertionPrefix: input.assertion.slice(0, 16),
   })
 
   const body = new URLSearchParams({
