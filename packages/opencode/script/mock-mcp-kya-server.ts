@@ -1,4 +1,6 @@
 import http from "http"
+import crypto from "crypto"
+import { createRemoteJWKSet, jwtVerify } from "jose"
 
 function json(res: http.ServerResponse, status: number, body: unknown, headers?: Record<string, string>) {
   res.writeHead(status, { "content-type": "application/json", ...(headers ?? {}) })
@@ -16,8 +18,28 @@ const authPort = Number(process.env.MOCK_AUTH_PORT ?? "8788")
 const authOrigin = `http://127.0.0.1:${authPort}`
 const mcpOrigin = `http://127.0.0.1:${mcpPort}`
 
-// In-memory token store: access_token -> assertion prefix (debug only)
-const issuedTokens = new Set<string>()
+const mockSigningSecret = process.env.MOCK_OAUTH_JWT_SECRET ?? "mock-oauth-dev-secret"
+const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://api-qa.skyfire.xyz/.well-known/jwks.json"
+const mockSkyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? "https://api-qa.skyfire.xyz"
+
+type TokenEntry = {
+  accessToken: string
+  active: boolean
+  scope: string
+  sub: string
+  user: string
+  clientId?: string
+  clientMetadata?: Record<string, string>
+  exp: number
+  iat: number
+}
+
+// In-memory token store for introspection/debug
+const issuedTokens = new Map<string, TokenEntry>()
+
+// In-memory replay cache for incoming KYA assertions (jti -> exp).
+// This simulates the "reject duplicate jti" behavior recommended in the spec.
+const seenAssertionJtis = new Map<string, number>()
 
 // In-memory OAuth client registrations
 let clientSeq = 0
@@ -31,6 +53,61 @@ function header(req: http.IncomingMessage, key: string) {
 function prefix(value: string, n: number) {
   if (value.length <= n) return value
   return value.slice(0, n)
+}
+
+function base64url(input: Buffer | string) {
+  const buf = typeof input === "string" ? Buffer.from(input, "utf8") : input
+  return buf.toString("base64url")
+}
+
+function signJwt(payload: Record<string, unknown>, secret: string) {
+  const header = { alg: "HS256", typ: "JWT" }
+  const encodedHeader = base64url(JSON.stringify(header))
+  const encodedPayload = base64url(JSON.stringify(payload))
+  const data = `${encodedHeader}.${encodedPayload}`
+  const sig = crypto.createHmac("sha256", secret).update(data).digest()
+  return `${data}.${base64url(sig)}`
+}
+
+function verifyJwt(token: string, secret: string) {
+  const [h, p, s] = token.split(".")
+  if (!h || !p || !s) return
+  const data = `${h}.${p}`
+  const expected = crypto.createHmac("sha256", secret).update(data).digest("base64url")
+  if (expected !== s) return
+  try {
+    const payload = JSON.parse(Buffer.from(p, "base64url").toString("utf8")) as Record<string, unknown>
+    return payload
+  } catch {
+    return
+  }
+}
+
+const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
+
+async function verifyKyaAssertion(assertion: string) {
+  const result = await jwtVerify(assertion, skyfireJwks, {
+    issuer: mockSkyfireIssuer,
+    audience: authOrigin,
+  })
+  return result.payload
+}
+
+function checkAndRememberAssertionJti(payload: Record<string, unknown>) {
+  const jti = typeof payload.jti === "string" ? payload.jti : undefined
+  const exp = typeof payload.exp === "number" ? payload.exp : undefined
+  if (!jti || !exp) return
+
+  const now = Math.floor(Date.now() / 1000)
+  for (const [key, value] of seenAssertionJtis.entries()) {
+    if (value <= now) seenAssertionJtis.delete(key)
+  }
+
+  if (seenAssertionJtis.has(jti)) {
+    throw new Error(`assertion replay detected (jti: ${jti})`)
+  }
+
+  seenAssertionJtis.set(jti, exp)
 }
 
 const authServer = http.createServer((req, res) => {
@@ -47,7 +124,13 @@ const authServer = http.createServer((req, res) => {
       token_endpoint: `${authOrigin}/token`,
       registration_endpoint: `${authOrigin}/register`,
       response_types_supported: ["code"],
-      authorization_grant_profiles_supported: ["kya"],
+      authorization_grant_profiles_supported: [
+        // Full URNs (per ID-JAG / KYA grant profile draft text in the spec doc)
+        "urn:ietf:params:oauth:grant-profile:id-jag",
+        "urn:ietf:params:oauth:grant-profile:kya",
+        // Compatibility: some clients match on the short token
+        "kya",
+      ],
     })
   }
 
@@ -58,7 +141,11 @@ const authServer = http.createServer((req, res) => {
       token_endpoint: `${authOrigin}/token`,
       registration_endpoint: `${authOrigin}/register`,
       response_types_supported: ["code"],
-      authorization_grant_profiles_supported: ["kya"],
+      authorization_grant_profiles_supported: [
+        "urn:ietf:params:oauth:grant-profile:id-jag",
+        "urn:ietf:params:oauth:grant-profile:kya",
+        "kya",
+      ],
     })
   }
 
@@ -90,7 +177,8 @@ const authServer = http.createServer((req, res) => {
   }
 
   // --- OAuth token endpoint (jwt-bearer) ---
-  if (req.method === "POST" && url.pathname === "/token") {
+  // Accept /token and /oauth/token to mirror common Auth0 deployments.
+  if (req.method === "POST" && (url.pathname === "/token" || url.pathname === "/oauth/token")) {
     let raw = ""
     req.on("data", (c) => (raw += c))
     req.on("end", () => {
@@ -112,28 +200,126 @@ const authServer = http.createServer((req, res) => {
         return json(res, 400, { error: "invalid_request", error_description: "missing assertion" })
       }
 
-      // Very lightweight validation: accept assertions that look like JWTs
-      // and optionally contain the expected audience marker.
-      const parts = assertion.split(".")
-      if (parts.length < 2) {
-        return json(res, 401, { error: "invalid_grant", error_description: "assertion is not a JWT" })
+      verifyKyaAssertion(assertion)
+        .then((payload) => {
+          const assertionPayload = payload as unknown as Record<string, unknown>
+          checkAndRememberAssertionJti(assertionPayload)
+          const hid = typeof (assertionPayload as any).hid === "string" ? (assertionPayload as any).hid : undefined
+          const aid = typeof (assertionPayload as any).aid === "string" ? (assertionPayload as any).aid : undefined
+          const apd = typeof (assertionPayload as any).apd === "string" ? (assertionPayload as any).apd : undefined
+
+          const now = Math.floor(Date.now() / 1000)
+          if (!hid || !aid) {
+            json(res, 400, { error: "invalid_request", error_description: "missing required aid/hid claims" })
+            return
+          }
+
+          const expiresIn = 3600
+          const accessExp = now + expiresIn
+          const scope = params.get("scope") ?? "mcp"
+
+          // Map KYA claims onto a principal record (demo mapping).
+          // - hid -> user
+          // - aid/apd -> client metadata
+          const user = hid
+          const clientMetadata: Record<string, string> = { aid }
+          if (apd) clientMetadata.apd = apd
+
+          // Issue access token whose aud equals the protected resource canonical URI.
+          const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin
+
+          const access = signJwt(
+            {
+              iss: authOrigin,
+              aud: resourceAud,
+              sub: user,
+              scope,
+              iat: now,
+              exp: accessExp,
+              jti: crypto.randomUUID(),
+              client_metadata: clientMetadata,
+            },
+            mockSigningSecret,
+          )
+
+          issuedTokens.set(access, {
+            accessToken: access,
+            active: true,
+            scope,
+            sub: user,
+            user,
+            clientMetadata,
+            exp: accessExp,
+            iat: now,
+          })
+
+          // eslint-disable-next-line no-console
+          console.log("mock oauth issued access token", {
+            grantType,
+            accessTokenPrefix: prefix(access, 20),
+            scope,
+            exp: accessExp,
+            user,
+            resourceAud,
+          })
+
+          json(res, 200, {
+            access_token: access,
+            token_type: "Bearer",
+            expires_in: expiresIn,
+            scope,
+          })
+        })
+        .catch((e) => {
+          const msg = e instanceof Error ? e.message : String(e)
+          json(res, 401, { error: "invalid_grant", error_description: `invalid assertion: ${msg}` })
+        })
+    })
+    return
+  }
+
+  // --- OAuth token introspection (RFC 7662-ish) ---
+  if (req.method === "POST" && url.pathname === "/introspect") {
+    let raw = ""
+    req.on("data", (c) => (raw += c))
+    req.on("end", () => {
+      const params = new URLSearchParams(raw)
+      const auth = header(req, "authorization")
+      const basic = auth?.startsWith("Basic ") ? auth.slice("Basic ".length) : undefined
+      const basicDecoded = basic ? Buffer.from(basic, "base64").toString("utf8") : undefined
+      const [basicUser, basicPass] = basicDecoded ? basicDecoded.split(":") : []
+
+      const clientId = params.get("client_id") ?? basicUser
+      const clientSecret = params.get("client_secret") ?? basicPass
+
+      // Mirror typical Auth0 behavior: introspection requires client authentication.
+      // For the demo, accept any non-empty client_id, and ignore secret validation.
+      if (!clientId || clientId.length === 0) {
+        return json(res, 401, { error: "invalid_client", error_description: "missing client authentication" })
+      }
+      if (clientSecret !== undefined && clientSecret.length === 0) {
+        return json(res, 401, { error: "invalid_client", error_description: "invalid client secret" })
       }
 
-      // Mint an opaque access token tied to the assertion (no signature validation).
-      const access = `mock_access_${Buffer.from(assertion).toString("base64url").slice(0, 16)}`
-      issuedTokens.add(access)
+      const token = params.get("token")
+      if (!token) return json(res, 400, { error: "invalid_request", error_description: "missing token" })
 
-      // eslint-disable-next-line no-console
-      console.log("mock oauth issued access token", {
-        grantType,
-        accessTokenPrefix: access.slice(0, 20),
-      })
+      const entry = issuedTokens.get(token)
+      const now = Math.floor(Date.now() / 1000)
+      if (!entry) return json(res, 200, { active: false })
+      if (entry.exp <= now) return json(res, 200, { active: false })
+      if (!entry.active) return json(res, 200, { active: false })
 
       return json(res, 200, {
-        access_token: access,
+        active: true,
+        iss: authOrigin,
+        aud: process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin,
+        sub: entry.user,
+        scope: entry.scope,
+        exp: entry.exp,
+        iat: entry.iat,
         token_type: "Bearer",
-        expires_in: 3600,
-        scope: params.get("scope") ?? undefined,
+        client_metadata: entry.clientMetadata,
       })
     })
     return
@@ -168,7 +354,18 @@ const mcpServer = http.createServer((req, res) => {
   if (req.method === "POST" && url.pathname === "/mcp") {
     const auth = req.headers.authorization
     const token = auth?.startsWith("Bearer ") ? auth.slice("Bearer ".length) : undefined
-    if (!token || !issuedTokens.has(token)) {
+    const scopeRequired = "mcp"
+    const now = Math.floor(Date.now() / 1000)
+    const tokenPayload = token ? verifyJwt(token, mockSigningSecret) : undefined
+    const tokenScope = typeof tokenPayload?.scope === "string" ? tokenPayload.scope : undefined
+    const tokenExp = typeof tokenPayload?.exp === "number" ? tokenPayload.exp : undefined
+    const tokenAud = typeof tokenPayload?.aud === "string" ? tokenPayload.aud : undefined
+
+    const hasScope = !!tokenScope?.split(/\s+/).includes(scopeRequired)
+    const notExpired = typeof tokenExp === "number" ? tokenExp > now : false
+    const audOk = tokenAud === (process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin)
+
+    if (!token || !tokenPayload || !notExpired || !audOk || !hasScope) {
       const challenge = `Bearer realm=\"mcp\", authorization-uri=\"${authOrigin}/.well-known/oauth-authorization-server\"`
 
       // eslint-disable-next-line no-console
@@ -177,6 +374,17 @@ const mcpServer = http.createServer((req, res) => {
         tokenPrefix: token ? prefix(token, 18) : undefined,
         issuedTokenCount: issuedTokens.size,
         wwwAuthenticate: challenge,
+        reason: !token
+          ? "missing_token"
+          : !tokenPayload
+            ? "invalid_signature"
+            : !notExpired
+              ? "expired"
+              : !audOk
+                ? "invalid_audience"
+                : !hasScope
+                  ? "missing_scope"
+                  : "unknown",
       })
 
       // Signal OAuth discovery via standard metadata locations.

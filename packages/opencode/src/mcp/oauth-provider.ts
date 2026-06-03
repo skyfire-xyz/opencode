@@ -365,7 +365,13 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
   const obj = metadata as Record<string, unknown>
   const arr = obj["authorization_grant_profiles_supported"]
   if (!Array.isArray(arr)) return []
-  return arr.filter((v): v is string => typeof v === "string")
+  return arr
+    .filter((v): v is string => typeof v === "string")
+    .flatMap((value) => {
+      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
+      return [value]
+    })
 }
 
 function tokenEndpointFromMetadata(metadata: unknown): string | undefined {
