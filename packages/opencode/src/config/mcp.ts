@@ -68,6 +68,10 @@ export const Remote = Schema.Struct({
     description:
       "Transport preference for remote MCP connections. Defaults to trying StreamableHTTP first (then SSE). Set to streamable_http to skip SSE for servers that don't support it.",
   }),
+  metadata: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)).annotate({
+    description:
+      "Free-form metadata for this MCP server. Used to attach deployment-specific flags without requiring schema updates.",
+  }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),

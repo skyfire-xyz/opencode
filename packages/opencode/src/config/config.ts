@@ -287,14 +287,6 @@ export const Info = Schema.Struct({
   ),
   experimental: Schema.optional(
     Schema.Struct({
-      kya: Schema.optional(
-        Schema.Struct({
-          create_token_url: Schema.optional(Schema.String).annotate({
-            description:
-              "Global KYA token issuer (Skyfire) endpoint used when exchanging KYA for OAuth tokens. If unset, OPENCODE_KYA_CREATE_TOKEN_URL is used.",
-          }),
-        }),
-      ),
       disable_paste_summary: Schema.optional(Schema.Boolean),
       batch_tool: Schema.optional(Schema.Boolean).annotate({ description: "Enable the batch tool" }),
       openTelemetry: Schema.optional(Schema.Boolean).annotate({
@@ -400,11 +392,6 @@ export const layer = Layer.effect(
     // This keeps feature toggles wired in one place and avoids threading
     // config through deep call stacks.
     const applyExperimentalEnvDefaults = (info: Info) => {
-      const url = info.experimental?.kya?.create_token_url
-      if (!url) return info
-      if (!process.env.OPENCODE_KYA_CREATE_TOKEN_URL) {
-        process.env.OPENCODE_KYA_CREATE_TOKEN_URL = url
-      }
       return info
     }
 

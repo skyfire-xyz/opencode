@@ -1,10 +1,11 @@
 # Mock MCP + KYA OAuth (Skyfire issuer + local mock OAuth + local mock MCP)
 
-This doc describes how OpenCode authenticates to a **mock MCP server** using **KYA** where:
+This doc describes how OpenCode authenticates to a **mock MCP server** using a **KYA-style flow** where:
 
-- **Skyfire** is used to mint the **KYA assertion** (real remote service).
-- A **local mock OAuth server** exchanges that assertion for an **OAuth access token**.
-- A **local mock MCP server** accepts that access token and allows MCP requests.
+- **Skyfire MCP** is used as the **token issuer** (via MCP tool call).
+- A **local mock MCP server** requires an access token.
+
+OpenCode does **not** call Skyfire's REST APIs directly.
 
 It also includes instructions to run the full flow locally.
 
@@ -14,18 +15,18 @@ It also includes instructions to run the full flow locally.
 
 ### Services
 
-| Service                  | Purpose                                           | Default URL                                     |
-| ------------------------ | ------------------------------------------------- | ----------------------------------------------- |
-| OpenCode instance server | UI/API that manages MCP connections               | `http://localhost:4096`                         |
-| Mock MCP server          | Protected MCP resource (requires Bearer token)    | `http://127.0.0.1:8787`                         |
-| Mock OAuth server        | OAuth AS (discovery/registration/token endpoints) | `http://127.0.0.1:8788`                         |
-| Skyfire KYA issuer       | Mints the KYA assertion used in JWT-bearer grant  | e.g. `https://api-qa.skyfire.xyz/api/v1/tokens` |
+| Service                  | Purpose                                           | Default URL                  |
+| ------------------------ | ------------------------------------------------- | ---------------------------- |
+| OpenCode instance server | UI/API that manages MCP connections               | `http://localhost:4096`      |
+| Mock MCP server          | Protected MCP resource (requires Bearer token)    | `http://127.0.0.1:8787`      |
+| Mock OAuth server        | OAuth AS (discovery/registration/token endpoints) | `http://127.0.0.1:8788`      |
+| Skyfire MCP issuer       | Mints a KYA JWT assertion via `create-kya-token`  | `http://mcp.skyfire.xyz/mcp` |
 
 ---
 
 ## What happens when you connect
 
-When you connect an MCP server named `mock-kya`, OpenCode does (simplified):
+When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
 
 1. **Connect attempt to the MCP endpoint**
    - `POST http://127.0.0.1:8787/mcp`
@@ -40,27 +41,29 @@ When you connect an MCP server named `mock-kya`, OpenCode does (simplified):
 
 - (Removed) This demo flow does not require Dynamic Client Registration.
 
-4. **KYA assertion minted by Skyfire**
-   - OpenCode calls Skyfire issuer endpoint to mint a KYA assertion:
-   - `POST $OPENCODE_KYA_CREATE_TOKEN_URL`
-   - Uses `skyfire-api-key: $OPENCODE_SKYFIRE_API_KEY`
+4. **KYA assertion minted by Skyfire MCP issuer**
 
-5. **Non-interactive OAuth token exchange (JWT-bearer)**
-   - OpenCode exchanges the Skyfire assertion at the mock OAuth token endpoint:
-   - `POST http://127.0.0.1:8788/token`
-   - Form body includes:
-     - `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`
-     - `assertion=<kya assertion>`
+- OpenCode connects to the MCP server named `skyfire` and calls:
+- `tools/call { name: "create-kya-token", arguments: { sellerServiceId: "…" } }`
+- Skyfire returns a **KYA JWT assertion** (not an OAuth access token).
 
-6. **Retry MCP with Bearer token**
+5. **Exchange assertion for an OAuth access token (JWT-bearer)**
+
+- OpenCode POSTs to the mock OAuth token endpoint (`http://127.0.0.1:8788/token`) with:
+  - `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`
+  - `assertion=<kya_jwt>`
+- Mock OAuth returns `{ access_token, token_type, ... }`.
+
+6. **Retry MCP with Bearer access token**
    - OpenCode retries:
    - `POST http://127.0.0.1:8787/mcp`
    - with `Authorization: Bearer <access_token>`
-   - On success, OpenCode marks `mock-kya` as **connected** and loads tool definitions.
+
+- On success, OpenCode marks `mock-kya-mcp` as **connected** and loads tool definitions.
 
 ### Key point: no browser redirect
 
-For KYA, the flow is **non-interactive**. If something opens an `/authorize` URL, it usually means the provider is being treated as an interactive OAuth client (misconfiguration).
+For KYA, the flow is **non-interactive** (no user browser step). If something opens an `/authorize` URL, it usually means KYA detection or the jwt-bearer exchange failed.
 
 ---
 
@@ -102,26 +105,16 @@ Example:
 ```jsonc
 {
   "mcp": {
-    "mock-kya": {
+    "mock-kya-mcp": {
       "type": "remote",
       "url": "http://127.0.0.1:8787/mcp",
+    },
 
-      // The mock server supports StreamableHTTP (POST /mcp). It does not implement SSE.
-      "transport": "streamable_http",
-
-      "oauth": {
-        "kya": {
-          "tokenType": "kya",
-          "buyerTag": "test",
-          "tokenAmount": 1,
-
-          // Must be a UUID accepted by Skyfire for your environment.
-          "sellerServiceId": "00000000-0000-0000-0000-000000000000",
-
-          // Optional:
-          // "apiKey": "..."     // prefer env vars for secrets
-          // "expiresAt": 123456 // unix seconds
-        },
+    "skyfire": {
+      "type": "remote",
+      "url": "http://mcp.skyfire.xyz/mcp",
+      "headers": {
+        "skyfire-api-key": "<your-skyfire-api-key>",
       },
     },
   },
@@ -130,18 +123,17 @@ Example:
 
 Notes:
 
-- `transport: "streamable_http"` is important to avoid SSE fallback errors.
-- `sellerServiceId` must be a valid UUID and must be valid for the Skyfire environment you’re calling.
+- OpenCode will prefer StreamableHTTP; SSE 404 is treated as unsupported.
+- Set your Skyfire API key via the `skyfire` MCP server's `headers.skyfire-api-key`.
 
----
+### 4) Export KYA env vars
 
-### 4) Export Skyfire env vars
-
-In the terminal where you’ll run OpenCode:
+The Skyfire QA issuer tool requires `sellerServiceId`:
 
 ```bash
-export OPENCODE_KYA_CREATE_TOKEN_URL="https://api-qa.skyfire.xyz/api/v1/tokens"
-export OPENCODE_SKYFIRE_API_KEY="<your skyfire api key>"
+export OPENCODE_KYA_SELLER_SERVICE_ID="662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+# Optional
+export OPENCODE_KYA_BUYER_TAG="your-buyer-tag"
 ```
 
 Security note: do **not** commit API keys into the repo.
@@ -163,7 +155,7 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 #### Web UI
 
-Open the UI you use that points at `http://localhost:4096`, then connect the `mock-kya` MCP server.
+Open the UI you use that points at `http://localhost:4096`, then connect the `mock-kya-mcp` MCP server.
 
 #### HTTP API
 
@@ -171,7 +163,7 @@ Replace the directory with your actual project directory (URL-encoded):
 
 ```bash
 curl -sS -X POST \
-  'http://localhost:4096/mcp/mock-kya/connect?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
+  'http://localhost:4096/mcp/mock-kya-mcp/connect?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
 ```
 
 Check status:
@@ -181,23 +173,20 @@ curl -sS \
   'http://localhost:4096/mcp?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
 ```
 
-You should see `mock-kya` become `connected`.
+You should see `mock-kya-mcp` become `connected`.
 
 ---
 
-## How to verify the KYA assertion is exchanged for an OAuth token
+## How to verify the token mint + MCP auth works
 
 ### 1) OpenCode logs (port 4096)
 
 With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs during the flow, including:
 
-- `requestKyaAssertion: requesting kya assertion` (Skyfire call)
-- `requestKyaAssertion: received kya assertion` (prints assertion prefix only)
-- `exchangeKyaForAccessToken: exchanging kya assertion for oauth token` (POST to `http://127.0.0.1:8788/token`)
-- `exchangeKyaForAccessToken: oauth token exchange succeeded` (prints access token prefix only)
-- `saved oauth tokens`
-
-These are emitted from `packages/opencode/src/mcp/oauth-provider.ts`.
+- `service=mcp transport connect attempt`
+- `kya mint: calling skyfire create-kya-token`
+- `kya mint: skyfire tool response`
+- `kya mint: stored token, retrying StreamableHTTP connect`
 
 ### 2) Mock OAuth server logs (port 8788)
 
@@ -235,8 +224,6 @@ From the repo root:
 
 ```bash
 cd packages/opencode
-OPENCODE_KYA_CREATE_TOKEN_URL="https://api-qa.skyfire.xyz/api/v1/tokens" \
-OPENCODE_SKYFIRE_API_KEY="<your skyfire api key>" \
 bun dev serve --port 4096 --log-level DEBUG --print-logs
 ```
 
@@ -244,9 +231,6 @@ Look for logs like:
 
 - `service=mcp connecting`
 - `service=mcp transport connect attempt`
-- `service=mcp.oauth requesting kya assertion`
-- `service=mcp.oauth exchanging kya assertion for oauth token`
-- `service=mcp.oauth oauth token exchange succeeded`
 - `service=mcp.oauth saved oauth tokens`
 
 ---
@@ -257,34 +241,23 @@ Look for logs like:
 
 Cause: client attempted SSE transport against the mock MCP server.
 
-Fix: ensure the MCP config includes:
-
-```jsonc
-"transport": "streamable_http"
-```
-
-Restart OpenCode.
+Status: OpenCode treats SSE 404 as "unsupported" for MCP servers, so this should no longer block StreamableHTTP connections.
 
 ---
 
-### `KYA issuer request failed (401): Invalid API Key`
+### `create-kya-token did not return a JWT`
 
-Cause: wrong/missing Skyfire API key or wrong issuer URL.
-
-Fix:
-
-- confirm `OPENCODE_SKYFIRE_API_KEY` is set in the same shell where OpenCode runs
-- confirm `OPENCODE_KYA_CREATE_TOKEN_URL` matches the environment for your key
-
----
-
-### `KYA issuer request failed (422): Validation Error`
-
-Cause: Skyfire rejected some request fields (commonly `sellerServiceId` not a UUID or not valid for that env).
+Cause: the Skyfire MCP issuer did not return a string containing a JWT assertion.
 
 Fix:
 
-- set a valid UUID `sellerServiceId`
-- ensure it’s valid for the Skyfire environment you’re calling
+- confirm `mcp.skyfire` is configured and reachable
+- confirm `mcp.skyfire.headers.skyfire-api-key` is set
+
+### `kya mint skipped: missing OPENCODE_KYA_SELLER_SERVICE_ID`
+
+Cause: Skyfire QA requires the `sellerServiceId` argument.
+
+Fix: export `OPENCODE_KYA_SELLER_SERVICE_ID` before starting OpenCode.
 
 ---

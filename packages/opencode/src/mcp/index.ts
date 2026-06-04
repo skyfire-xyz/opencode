@@ -79,6 +79,9 @@ const StatusConnected = Schema.Struct({ status: Schema.Literal("connected") }).a
 const StatusDisabled = Schema.Struct({ status: Schema.Literal("disabled") }).annotate({
   identifier: "MCPStatusDisabled",
 })
+const StatusNotConnected = Schema.Struct({ status: Schema.Literal("not_connected") }).annotate({
+  identifier: "MCPStatusNotConnected",
+})
 const StatusFailed = Schema.Struct({ status: Schema.Literal("failed"), error: Schema.String }).annotate({
   identifier: "MCPStatusFailed",
 })
@@ -93,6 +96,7 @@ const StatusNeedsClientRegistration = Schema.Struct({
 export const Status = Schema.Union([
   StatusConnected,
   StatusDisabled,
+  StatusNotConnected,
   StatusFailed,
   StatusNeedsAuth,
   StatusNeedsClientRegistration,
@@ -123,6 +127,27 @@ function isOutputSchemaValidationError(error: Error) {
   return /can't resolve reference|resolves to more than one schema|outputSchema|schema.*reference|reference.*schema/i.test(
     error.message,
   )
+}
+
+function authorizationGrantProfilesSupported(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object") return []
+  const obj = metadata as Record<string, unknown>
+  const arr = obj["authorization_grant_profiles_supported"]
+  if (!Array.isArray(arr)) return []
+  return arr
+    .filter((v): v is string => typeof v === "string")
+    .flatMap((value) => {
+      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
+      return [value]
+    })
+}
+
+function extractJwtFromText(input: string): string | undefined {
+  // Skyfire QA tool currently returns a human-readable string like:
+  // "Creation of KYA token for <id> is complete: <jwt>"
+  const m = input.match(/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
+  return m ? m[1] : undefined
 }
 
 function listTools(key: string, client: MCPClient, timeout: number) {
@@ -241,32 +266,38 @@ interface State {
 }
 
 export interface Interface {
-  readonly status: () => Effect.Effect<Record<string, Status>>
-  readonly clients: () => Effect.Effect<Record<string, MCPClient>>
-  readonly tools: () => Effect.Effect<Record<string, Tool>>
-  readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
-  readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
-  readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
-  readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
-  readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly status: () => Effect.Effect<Record<string, Status>, never, Config.Service>
+  readonly clients: () => Effect.Effect<Record<string, MCPClient>, never, Config.Service>
+  readonly tools: () => Effect.Effect<Record<string, Tool>, never, Config.Service>
+  readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>, never, Config.Service>
+  readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>, never, Config.Service>
+  readonly add: (
+    name: string,
+    mcp: ConfigMCP.Info,
+  ) => Effect.Effect<{ status: Record<string, Status> | Status }, never, Config.Service>
+  readonly connect: (name: string) => Effect.Effect<void, NotFoundError, Config.Service>
+  readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError, Config.Service>
   readonly getPrompt: (
     clientName: string,
     name: string,
     args?: Record<string, string>,
-  ) => Effect.Effect<Awaited<ReturnType<MCPClient["getPrompt"]>> | undefined>
+  ) => Effect.Effect<Awaited<ReturnType<MCPClient["getPrompt"]>> | undefined, never, Config.Service>
   readonly readResource: (
     clientName: string,
     resourceUri: string,
-  ) => Effect.Effect<Awaited<ReturnType<MCPClient["readResource"]>> | undefined>
+  ) => Effect.Effect<Awaited<ReturnType<MCPClient["readResource"]>> | undefined, never, Config.Service>
   readonly startAuth: (
     mcpName: string,
-  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string }, NotFoundError>
-  readonly authenticate: (mcpName: string) => Effect.Effect<Status, NotFoundError>
-  readonly finishAuth: (mcpName: string, authorizationCode: string) => Effect.Effect<Status, NotFoundError>
-  readonly removeAuth: (mcpName: string) => Effect.Effect<void>
-  readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean, NotFoundError>
-  readonly hasStoredTokens: (mcpName: string) => Effect.Effect<boolean>
-  readonly getAuthStatus: (mcpName: string) => Effect.Effect<AuthStatus>
+  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string }, NotFoundError, Config.Service>
+  readonly authenticate: (mcpName: string) => Effect.Effect<Status, NotFoundError, Config.Service>
+  readonly finishAuth: (
+    mcpName: string,
+    authorizationCode: string,
+  ) => Effect.Effect<Status, NotFoundError, Config.Service>
+  readonly removeAuth: (mcpName: string) => Effect.Effect<void, never, Config.Service>
+  readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean, NotFoundError, Config.Service>
+  readonly hasStoredTokens: (mcpName: string) => Effect.Effect<boolean, never, Config.Service>
+  readonly getAuthStatus: (mcpName: string) => Effect.Effect<AuthStatus, never, Config.Service>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/MCP") {}
@@ -330,7 +361,6 @@ export const layer = Layer.effect(
           hasClientId: !!oauthConfig?.clientId,
           hasClientSecret: !!oauthConfig?.clientSecret,
           hasScope: !!oauthConfig?.scope,
-          kyaConfigured: !!(oauthConfig && "kya" in oauthConfig),
         })
         authProvider = new McpOAuthProvider(
           key,
@@ -394,6 +424,7 @@ export const layer = Layer.effect(
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       let lastStatus: Status | undefined
+      let streamableHttpRetry = 0
 
       for (const { name, transport } of transports) {
         log.info("transport connect attempt", { key, transport: name, timeout: connectTimeout })
@@ -401,29 +432,238 @@ export const layer = Layer.effect(
           Effect.map((client) => ({ client, transportName: name })),
           Effect.catch((error) => {
             const lastError = error instanceof Error ? error : new Error(String(error))
+
             const isAuthError =
               error instanceof UnauthorizedError || (authProvider && lastError.message.includes("OAuth"))
 
             if (isAuthError) {
               log.info("mcp server requires authentication", { key, transport: name })
 
-              if (lastError.message.includes("registration") || lastError.message.includes("client_id")) {
-                lastStatus = {
-                  status: "needs_client_registration" as const,
-                  error: "Server does not support dynamic client registration. Please provide clientId in config.",
-                }
-                return bus
-                  .publish(TuiEvent.ToastShow, {
-                    title: "MCP Authentication Required",
-                    message: `Server "${key}" requires a pre-registered client ID. Add clientId to your config.`,
-                    variant: "warning",
-                    duration: 8000,
-                  })
-                  .pipe(Effect.ignore, Effect.as(undefined))
-              } else {
-                pendingOAuthTransports.set(key, transport)
+              // If StreamableHTTP hits an auth-required state, don't attempt SSE
+              // fallback (many servers don't implement SSE and return 404).
+              if (name === "StreamableHTTP") {
                 lastStatus = { status: "needs_auth" as const }
-                return bus
+              }
+
+              const hintedDcr = lastError.message.includes("registration") || lastError.message.includes("client_id")
+
+              return Effect.gen(function* () {
+                const minted = yield* Effect.gen(function* () {
+                  const cfgSvc = yield* Config.Service
+                  const cfg = yield* cfgSvc.get()
+
+                  // Detect KYA support up front so we can avoid triggering interactive OAuth redirects.
+                  const kyaSupport = yield* Effect.tryPromise({
+                    try: async () => {
+                      const resourceOrigin = new URL(mcp.url).origin
+                      const protectedRes = await fetch(
+                        new URL("/.well-known/oauth-protected-resource", resourceOrigin),
+                        {
+                          headers: { accept: "application/json" },
+                        },
+                      )
+                      if (!protectedRes.ok) return { supportsKya: false, authServer: undefined as string | undefined }
+
+                      const protectedJson = (await protectedRes.json()) as any
+                      const authServers =
+                        Array.isArray(protectedJson?.authorization_servers) &&
+                        protectedJson.authorization_servers.every((x: any) => typeof x === "string")
+                          ? (protectedJson.authorization_servers as string[])
+                          : []
+                      const authServer = authServers[0]
+                      if (!authServer) return { supportsKya: false, authServer: undefined as string | undefined }
+
+                      const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+                        headers: { accept: "application/json" },
+                      })
+                      const asJson = rfc8414.ok
+                        ? await rfc8414.json()
+                        : await fetch(new URL("/.well-known/openid-configuration", authServer), {
+                            headers: { accept: "application/json" },
+                          }).then((r) => (r.ok ? r.json() : undefined))
+
+                      const profiles = authorizationGrantProfilesSupported(asJson)
+                      log.info("kya resource AS metadata", {
+                        key,
+                        resourceOrigin,
+                        authServer,
+                        supportsKya: profiles.includes("kya"),
+                        profiles: profiles.slice(0, 8),
+                      })
+                      return { supportsKya: profiles.includes("kya"), authServer }
+                    },
+                    catch: () => ({ supportsKya: false, authServer: undefined as string | undefined }),
+                  })
+
+                  if (!kyaSupport.supportsKya) return false
+
+                  // If the SDK tried to start an interactive auth-code flow for a KYA-capable resource,
+                  // don't proceed with redirects — we will mint/exchange a token non-interactively.
+                  // (The redirect already happened before we got here; this prevents any further
+                  // interactive fallback state like DCR from becoming the surfaced reason.)
+
+                  const issuer = cfg.mcp?.skyfire
+                  if (!issuer || typeof issuer !== "object" || issuer === null || !("type" in issuer)) {
+                    log.info("kya supported but no issuer configured", { key })
+                    return false
+                  }
+
+                  if ((issuer as any).type !== "remote") {
+                    log.info("kya supported but issuer is not remote", { key, type: (issuer as any).type })
+                    return false
+                  }
+
+                  const issuerRemote = issuer as unknown as ConfigMCP.Remote
+                  const issuerHeaders = issuerRemote.headers ?? {}
+
+                  const buyerTag = process.env.OPENCODE_KYA_BUYER_TAG
+                  const sellerServiceId = process.env.OPENCODE_KYA_SELLER_SERVICE_ID
+
+                  if (!sellerServiceId) {
+                    log.warn("kya mint skipped: missing OPENCODE_KYA_SELLER_SERVICE_ID", { key })
+                    return undefined
+                  }
+
+                  const issuerTransport = new StreamableHTTPClientTransport(new URL(issuerRemote.url), {
+                    requestInit: { headers: issuerHeaders },
+                  })
+                  const issuerClient = new Client({ name: "opencode", version: InstallationVersion })
+                  yield* Effect.tryPromise({
+                    try: () => issuerClient.connect(issuerTransport),
+                    catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+                  })
+
+                  log.info("kya mint: calling skyfire create-kya-token", {
+                    key,
+                    issuerUrl: issuerRemote.url,
+                    hasBuyerTag: !!buyerTag,
+                    hasSellerServiceId: !!sellerServiceId,
+                  })
+
+                  const toolResult = yield* Effect.tryPromise({
+                    try: () =>
+                      issuerClient.callTool({
+                        name: "create-kya-token",
+                        arguments: {
+                          // Skyfire QA issuer requires sellerServiceId.
+                          sellerServiceId,
+                          ...(buyerTag ? { buyerTag } : {}),
+                        },
+                      }),
+                    catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+                  }).pipe(Effect.ensuring(Effect.tryPromise(() => issuerClient.close()).pipe(Effect.ignore)))
+
+                  const text = Array.isArray((toolResult as any).content)
+                    ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
+                    : String((toolResult as any).content ?? "")
+
+                  log.info("kya mint: skyfire tool response", { key, textPrefix: text.slice(0, 120) })
+
+                  const assertion = extractJwtFromText(text)
+                  if (!assertion) {
+                    log.warn("kya mint failed: could not extract jwt from skyfire tool output", { key })
+                    return false
+                  }
+
+                  // Exchange KYA assertion for an OAuth access token at the resource's auth server.
+                  const oauthMetadata = yield* Effect.tryPromise({
+                    try: async () => {
+                      const authServer = kyaSupport.authServer
+                      if (!authServer) return undefined
+                      const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+                        headers: { accept: "application/json" },
+                      })
+                      return rfc8414.ok ? ((await rfc8414.json()) as any) : undefined
+                    },
+                    catch: () => undefined,
+                  })
+
+                  const tokenEndpoint =
+                    oauthMetadata &&
+                    typeof oauthMetadata === "object" &&
+                    typeof (oauthMetadata as any).token_endpoint === "string"
+                      ? ((oauthMetadata as any).token_endpoint as string)
+                      : undefined
+                  if (!tokenEndpoint) {
+                    log.warn("kya exchange skipped: auth server metadata missing token_endpoint", { key })
+                    return false
+                  }
+
+                  const form = new URLSearchParams({
+                    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                    assertion,
+                  })
+
+                  const tokenJson = yield* Effect.tryPromise({
+                    try: async () => {
+                      const res = await fetch(tokenEndpoint, {
+                        method: "POST",
+                        headers: { "content-type": "application/x-www-form-urlencoded" },
+                        body: form,
+                      })
+                      if (!res.ok) {
+                        throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
+                      }
+                      return (await res.json()) as any
+                    },
+                    catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+                  })
+
+                  const accessToken =
+                    tokenJson && typeof tokenJson.access_token === "string" ? tokenJson.access_token : undefined
+                  if (!accessToken) {
+                    log.warn("kya exchange failed: missing access_token", { key })
+                    return false
+                  }
+
+                  yield* auth.updateTokens(
+                    key,
+                    { accessToken, refreshToken: undefined, expiresAt: undefined, scope: undefined },
+                    // McpOAuthProvider normalizes serverUrl to origin (not the /mcp path),
+                    // and McpAuth.getForUrl() keys tokens by that value.
+                    new URL(mcp.url).origin,
+                  )
+
+                  // We have credentials now; retry the primary transport once so a single
+                  // user "connect" action can reach the connected state.
+                  if (name === "StreamableHTTP" && streamableHttpRetry === 0) {
+                    streamableHttpRetry = 1
+                    log.info("kya mint: stored token, retrying StreamableHTTP connect", { key })
+                  }
+
+                  return true
+                }).pipe(
+                  Effect.catch((e) => {
+                    const msg = e instanceof Error ? e.message : String(e)
+                    log.warn("kya mint failed", { key, error: msg })
+                    return Effect.succeed(false)
+                  }),
+                )
+
+                // If we minted a token, we either scheduled a retry (sentinel) or we can just
+                // fall through and let the outer loop continue.
+                if (minted) return undefined
+
+                // If KYA isn't available, and the error suggests DCR is required, surface that.
+                if (hintedDcr) {
+                  lastStatus = {
+                    status: "needs_client_registration" as const,
+                    error: "Server does not support dynamic client registration. Please provide clientId in config.",
+                  }
+                  return yield* bus
+                    .publish(TuiEvent.ToastShow, {
+                      title: "MCP Authentication Required",
+                      message: `Server "${key}" requires a pre-registered client ID. Add clientId to your config.`,
+                      variant: "warning",
+                      duration: 8000,
+                    })
+                    .pipe(Effect.ignore, Effect.as(undefined))
+                }
+
+                // Only StreamableHTTP supports finishAuth() in the MCP SDK.
+                if (name === "StreamableHTTP") pendingOAuthTransports.set(key, transport)
+                lastStatus = { status: "needs_auth" as const }
+                return yield* bus
                   .publish(TuiEvent.ToastShow, {
                     title: "MCP Authentication Required",
                     message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
@@ -431,7 +671,7 @@ export const layer = Layer.effect(
                     duration: 8000,
                   })
                   .pipe(Effect.ignore, Effect.as(undefined))
-              }
+              })
             }
 
             log.debug("transport connection failed", {
@@ -439,8 +679,21 @@ export const layer = Layer.effect(
               transport: name,
               url: mcp.url,
               error: lastError.message,
+              cause: (lastError as any).cause,
             })
-            lastStatus = { status: "failed" as const, error: lastError.message }
+
+            // Many MCP servers don't implement SSE transport at all. When SSE
+            // returns a plain 404, treat it as "unsupported" rather than a
+            // connection failure that overrides the primary StreamableHTTP
+            // outcome.
+            if (name === "SSE" && /Non-200 status code \(404\)/i.test(lastError.message)) {
+              return Effect.succeed(undefined)
+            }
+
+            lastStatus = {
+              status: "failed" as const,
+              error: `${name} error for ${mcp.url}: ${lastError.message}`,
+            }
             return Effect.succeed(undefined)
           }),
         )
@@ -448,13 +701,31 @@ export const layer = Layer.effect(
           log.info("connected", { key, transport: result.transportName })
           return { client: result.client as MCPClient | undefined, status: { status: "connected" } as Status }
         }
-        // If this was an auth error, stop trying other transports
-        if (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration") break
+
+        // If KYA minting requested a StreamableHTTP retry, run it now (once) before
+        // attempting any other transports.
+        if (name === "StreamableHTTP" && streamableHttpRetry === 1) {
+          // Reset immediately to avoid loops.
+          streamableHttpRetry = 2
+          continue
+        }
+        // If StreamableHTTP reached an auth-required state, don't attempt SSE
+        // fallback (many servers don't implement SSE and return 404).
+        if (
+          name === "StreamableHTTP" &&
+          (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration")
+        ) {
+          break
+        }
       }
 
       return {
         client: undefined as MCPClient | undefined,
-        status: (lastStatus ?? { status: "failed", error: "Unknown error" }) as Status,
+        status: (lastStatus ??
+          ({
+            status: "failed",
+            error: `Failed to connect to ${mcp.url} (no transport succeeded)` as const,
+          } as const)) as Status,
       }
     })
 
@@ -561,9 +832,8 @@ export const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* () {
-        const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        const config = {} as Record<string, unknown>
         const s: State = {
           config: {},
           status: {},
@@ -571,32 +841,9 @@ export const layer = Layer.effect(
           defs: {},
         }
 
-        yield* Effect.forEach(
-          Object.entries(config),
-          ([key, mcp]) =>
-            Effect.gen(function* () {
-              if (!isMcpConfigured(mcp)) {
-                log.error("Ignoring MCP config entry without type", { key })
-                return
-              }
-
-              if (mcp.enabled === false) {
-                s.status[key] = { status: "disabled" }
-                return
-              }
-
-              const result = yield* create(key, mcp).pipe(Effect.catch(() => Effect.void))
-              if (!result) return
-
-              s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
-              }
-            }),
-          { concurrency: "unbounded" },
-        )
+        // Note: we intentionally don't eagerly connect here, because this
+        // initializer must be Scope-only (no access to other services like
+        // Config). MCP clients are connected on-demand.
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -657,7 +904,11 @@ export const layer = Layer.effect(
 
       for (const [key, mcp] of Object.entries(config)) {
         if (!isMcpConfigured(mcp)) continue
-        result[key] = s.status[key] ?? { status: "disabled" }
+        if (mcp.enabled === false) {
+          result[key] = { status: "disabled" }
+          continue
+        }
+        result[key] = s.status[key] ?? { status: "not_connected" }
       }
 
       for (const key of Object.keys(s.config)) {

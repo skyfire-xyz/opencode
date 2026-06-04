@@ -64,6 +64,14 @@ function oauthServers(config: Config.Info) {
   )
 }
 
+function kyaIssuerServers(config: Config.Info) {
+  // Option A: issuer is selected by a naming convention so config stays valid
+  // under the published schema at https://opencode.ai/config.json.
+  return configuredServers(config).filter(
+    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && entry[0] === "skyfire",
+  )
+}
+
 function listState() {
   return Effect.gen(function* () {
     const cfg = yield* Config.Service
@@ -89,6 +97,84 @@ function authState() {
     )
     return { config, auth }
   })
+}
+
+async function mintKyaAccessToken(input: {
+  config: Config.Info
+  auth: McpAuth.Interface
+  targetServerName: string
+}): Promise<{ accessToken: string } | { error: string }> {
+  const issuers = kyaIssuerServers(input.config)
+  if (issuers.length === 0) {
+    return { error: 'No KYA issuer server found (expected an MCP server named "skyfire")' }
+  }
+
+  if (issuers.length > 1) {
+    return { error: `Multiple KYA issuers found in config: ${issuers.map(([name]) => name).join(", ")}` }
+  }
+
+  const [issuerName, issuerCfg] = issuers[0]
+  if (issuerCfg.type !== "remote") {
+    return { error: `KYA issuer ${issuerName} must be a remote MCP server` }
+  }
+
+  const buyerTag = process.env.OPENCODE_KYA_BUYER_TAG
+  const sellerServiceId = process.env.OPENCODE_KYA_SELLER_SERVICE_ID
+
+  // Schema-friendly path: mint tokens strictly via the issuer MCP server tool.
+  // No direct Skyfire API calls and no reliance on config-only fields like oauth.kya.
+  const transport = new StreamableHTTPClientTransport(new URL(issuerCfg.url), {
+    requestInit: issuerCfg.headers ? { headers: issuerCfg.headers } : undefined,
+  })
+
+  const client = new Client({ name: "opencode-cli", version: InstallationVersion })
+  await client.connect(transport)
+
+  try {
+    const result = await client.callTool({
+      name: "create-kya-token",
+      arguments: {
+        // Let the issuer bind tokens to the target server if it supports it.
+        target: input.targetServerName,
+        ...(buyerTag ? { buyerTag } : {}),
+        ...(sellerServiceId ? { sellerServiceId } : {}),
+      },
+    })
+
+    // The MCP SDK tool response shape is flexible; the mock issuer returns a JSON-ish string.
+    const text = Array.isArray((result as any).content)
+      ? (result as any).content.map((c: any) => c.text ?? "").join("\n")
+      : String((result as any).content ?? "")
+
+    const maybe = (() => {
+      try {
+        return JSON.parse(text)
+      } catch {
+        return undefined
+      }
+    })()
+
+    const accessToken = (() => {
+      switch (true) {
+        case typeof maybe !== "object" || maybe === null:
+          return undefined
+        case "accessToken" in maybe && typeof (maybe as any).accessToken === "string":
+          return (maybe as any).accessToken as string
+        case "access_token" in maybe && typeof (maybe as any).access_token === "string":
+          return (maybe as any).access_token as string
+        default:
+          return undefined
+      }
+    })()
+
+    if (!accessToken) {
+      return { error: `create-kya-token did not return an access token. Output: ${text.slice(0, 500)}` }
+    }
+
+    return { accessToken }
+  } finally {
+    await client.close().catch(() => {})
+  }
 }
 
 export const McpCommand = cmd({
@@ -143,6 +229,9 @@ export const McpListCommand = effectCmd({
       } else if (status.status === "disabled") {
         statusIcon = "○"
         statusText = "disabled"
+      } else if (status.status === "not_connected") {
+        statusIcon = "○"
+        statusText = "not connected"
       } else if (status.status === "needs_auth") {
         statusIcon = "⚠"
         statusText = "needs authentication"
@@ -641,7 +730,7 @@ export const McpDebugCommand = effectCmd({
         Effect.all({
           authStatus: mcp.getAuthStatus(serverName),
           entry: auth.get(serverName),
-        }),
+        }).pipe(Effect.provide(Config.defaultLayer)),
       )
       prompts.log.info(`Auth status: ${getAuthStatusIcon(authStatus)} ${getAuthStatusText(authStatus)}`)
 
@@ -698,8 +787,69 @@ export const McpDebugCommand = effectCmd({
         if (response.status === 401) {
           prompts.log.warn("Server returned 401 Unauthorized")
 
-          // Try to discover OAuth metadata
           const oauthConfig = typeof serverConfig.oauth === "object" ? serverConfig.oauth : undefined
+
+          const minted = await mintKyaAccessToken({ config, auth, targetServerName: serverName })
+          if ("error" in minted) {
+            prompts.log.warn(`KYA token mint skipped: ${minted.error}`)
+          } else {
+            await Effect.runPromise(
+              auth.updateTokens(
+                serverName,
+                {
+                  accessToken: minted.accessToken,
+                  refreshToken: undefined,
+                  // Best-effort: mock token is JWT, expiry is validated server-side.
+                  expiresAt: undefined,
+                  scope: undefined,
+                },
+                // Keep serverUrl consistent with McpOAuthProvider normalization.
+                new URL(serverConfig.url).origin,
+              ),
+            )
+            prompts.log.success(`KYA token minted and stored for ${serverName}`)
+
+            // Prove the token works end-to-end by reconnecting and listing tools.
+            const proofSpinner = prompts.spinner()
+            proofSpinner.start("Re-testing MCP connection with stored token...")
+            try {
+              const transport = new StreamableHTTPClientTransport(new URL(serverConfig.url), {
+                authProvider: new McpOAuthProvider(
+                  serverName,
+                  serverConfig.url,
+                  {
+                    clientId: oauthConfig?.clientId,
+                    clientSecret: oauthConfig?.clientSecret,
+                    scope: oauthConfig?.scope,
+                    redirectUri: oauthConfig?.redirectUri,
+                    ...(oauthConfig && "kya" in oauthConfig ? { kya: (oauthConfig as any).kya } : {}),
+                  },
+                  { onRedirect: async () => {} },
+                  auth,
+                ),
+              })
+
+              const client = new Client({ name: "opencode-debug", version: InstallationVersion })
+              await client.connect(transport)
+              const tools = await client.listTools()
+              await client.close().catch(() => {})
+              proofSpinner.stop(`Authenticated MCP connect succeeded (${tools.tools.length} tool(s))`)
+
+              const toolNames = tools.tools.map((t) => t.name).sort()
+              const limit = 20
+              for (const name of toolNames.slice(0, limit)) {
+                prompts.log.info(`  - ${name}`)
+              }
+              if (toolNames.length > limit) {
+                prompts.log.info(`  ...and ${toolNames.length - limit} more`)
+              }
+            } catch (error) {
+              proofSpinner.stop("Authenticated MCP connect failed", 1)
+              prompts.log.error(error instanceof Error ? error.message : String(error))
+            }
+          }
+
+          // Try to discover OAuth metadata
           const authProvider = new McpOAuthProvider(
             serverName,
             serverConfig.url,

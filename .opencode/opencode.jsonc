@@ -3,22 +3,22 @@
   "provider": {},
   "permission": {},
   "mcp": {
-    "mock-kya": {
+    "mock-kya-mcp": {
       "type": "remote",
-      "url": "http://127.0.0.1:8787/mcp",
-      "transport": "streamable_http",
-      "oauth": {
-        "kya": {
-          "tokenType": "kya",
-          "buyerTag": "Playground-mw2o5fsoja",
-          "tokenAmount": 1,
-          "sellerServiceId": "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
-        }
+      "enabled": true,
+      "url": "http://127.0.0.1:8787/mcp"
+    },
+    "skyfire": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://mcp-qa.skyfire.xyz/mcp",
+      "headers": {
+        "skyfire-api-key": ""
       }
     }
-  },  
+  },
   "tools": {
     "github-triage": false,
-    "github-pr-search": false,
+    "github-pr-search": false
   },
 }
