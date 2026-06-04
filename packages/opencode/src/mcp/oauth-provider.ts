@@ -15,14 +15,6 @@ const log = Log.create({ service: "mcp.oauth" })
 const OAUTH_CALLBACK_PORT = 19876
 const OAUTH_CALLBACK_PATH = "/mcp/oauth/callback"
 
-export const AcceptedTokens = {
-  kya: "kya",
-  pay: "pay",
-  "kya-pay": "kya-pay",
-} as const
-
-export type AcceptedTokenType = (typeof AcceptedTokens)[keyof typeof AcceptedTokens]
-
 export interface McpOAuthConfig {
   clientId?: string
   clientSecret?: string

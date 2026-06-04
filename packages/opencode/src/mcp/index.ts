@@ -371,9 +371,6 @@ export const layer = Layer.effect(
             scope: oauthConfig?.scope,
             callbackPort: oauthConfig?.callbackPort,
             redirectUri: oauthConfig?.redirectUri,
-            // KYA is intentionally opaque to the MCP core service — it is only
-            // used by the OAuth client provider when RAS metadata opts in.
-            ...(oauthConfig && "kya" in oauthConfig ? { kya: (oauthConfig as any).kya } : {}),
           },
           {
             onRedirect: async (url) => {
@@ -1099,7 +1096,6 @@ export const layer = Layer.effect(
           clientSecret: oauthConfig?.clientSecret,
           scope: oauthConfig?.scope,
           redirectUri: effectiveRedirectUri,
-          ...(oauthConfig && "kya" in oauthConfig ? { kya: (oauthConfig as any).kya } : {}),
         },
         {
           onRedirect: async (url) => {

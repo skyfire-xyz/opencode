@@ -1,24 +1,5 @@
 import { test, expect, describe } from "bun:test"
-import { Effect } from "effect"
 import { McpOAuthProvider, OAUTH_CALLBACK_PORT, OAUTH_CALLBACK_PATH } from "../../src/mcp/oauth-provider"
-import type { McpAuth } from "../../src/mcp/auth"
-
-// Stub auth — only a small subset is required by these tests.
-const stubAuth = {
-  getForUrl: () => Effect.succeed(undefined),
-  get: () => Effect.succeed(undefined),
-  updateTokens: () => Effect.void,
-  updateClientInfo: () => Effect.void,
-  updateCodeVerifier: () => Effect.void,
-  updateOAuthState: () => Effect.void,
-  clearCodeVerifier: () => Effect.void,
-  clearOAuthState: () => Effect.void,
-  getOAuthState: () => Effect.succeed(undefined),
-  remove: () => Effect.void,
-  set: () => Effect.void,
-  all: () => Effect.succeed({}),
-  isTokenExpired: () => Effect.succeed(null),
-} as unknown as McpAuth.Interface
 
 const makeProvider = (config: ConstructorParameters<typeof McpOAuthProvider>[2]) =>
   new McpOAuthProvider("test-server", "https://mcp.example.com/mcp", config, { onRedirect: async () => {} }, stubAuth)

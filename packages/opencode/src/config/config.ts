@@ -388,13 +388,6 @@ export const layer = Layer.effect(
     const npmSvc = yield* Npm.Service
     const http = yield* HttpClient.HttpClient
 
-    // Ensure experimental config can supply global env-like defaults.
-    // This keeps feature toggles wired in one place and avoids threading
-    // config through deep call stacks.
-    const applyExperimentalEnvDefaults = (info: Info) => {
-      return info
-    }
-
     const readConfigFile = (filepath: string) => fs.readFileStringSafe(filepath).pipe(Effect.orDie)
 
     const fetchRemoteJson = Effect.fnUntraced(function* <S extends Schema.Top>(
@@ -615,9 +608,6 @@ export const layer = Layer.effect(
         result.agent = result.agent || {}
         result.mode = result.mode || {}
         result.plugin = result.plugin || []
-
-        // Apply global defaults derived from config.
-        applyExperimentalEnvDefaults(result)
 
         const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
 

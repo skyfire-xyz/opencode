@@ -1,6 +1,5 @@
 import { Schema } from "effect"
 import { PositiveInt } from "@opencode-ai/core/schema"
-import { AcceptedTokens } from "@/mcp/oauth-provider"
 
 export const Local = Schema.Struct({
   type: Schema.Literal("local").annotate({ description: "Type of MCP server connection" }),
@@ -34,28 +33,6 @@ export const OAuth = Schema.Struct({
   redirectUri: Schema.optional(Schema.String).annotate({
     description: "OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback).",
   }),
-
-  /**
-   * KYA (Know Your Agent) configuration. Only used when the Resource
-   * Authorization Server metadata advertises
-   * `authorization_grant_profiles_supported: ["kya"]`.
-   */
-  kya: Schema.optional(
-    Schema.Struct({
-      apiKey: Schema.optional(Schema.String).annotate({ description: "API key sent to the KYA token issuer" }),
-      tokenType: Schema.optional(Schema.Enum(AcceptedTokens)).annotate({
-        description: "Token type value sent to issuer",
-      }),
-      buyerTag: Schema.optional(Schema.String).annotate({ description: "buyerTag field sent to issuer" }),
-      tokenAmount: Schema.optional(Schema.Number).annotate({ description: "tokenAmount field sent to issuer" }),
-      sellerServiceId: Schema.optional(Schema.String).annotate({
-        description: "sellerServiceId field sent to issuer (defaults to empty string)",
-      }),
-      expiresAt: Schema.optional(Schema.Number).annotate({
-        description: "expiresAt as unix seconds sent to issuer (defaults to 5 minutes)",
-      }),
-    }).annotate({ identifier: "McpOAuthKyaConfig" }),
-  ),
 }).annotate({ identifier: "McpOAuthConfig" })
 export type OAuth = Schema.Schema.Type<typeof OAuth>
 
