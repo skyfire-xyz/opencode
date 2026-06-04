@@ -19,6 +19,7 @@ import { modify, applyEdits } from "jsonc-parser"
 import { Filesystem } from "@/util/filesystem"
 import { Bus } from "../../bus"
 import { Effect } from "effect"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
   switch (status) {
@@ -118,8 +119,10 @@ async function mintKyaAccessToken(input: {
     return { error: `KYA issuer ${issuerName} must be a remote MCP server` }
   }
 
-  const buyerTag = process.env.OPENCODE_KYA_BUYER_TAG
-  const sellerServiceId = process.env.OPENCODE_KYA_SELLER_SERVICE_ID
+  const sellerServiceId = Flag.OPENCODE_KYA_SELLER_SERVICE_ID
+  if (!sellerServiceId) {
+    return { error: "Missing OPENCODE_KYA_SELLER_SERVICE_ID" }
+  }
 
   // Schema-friendly path: mint tokens strictly via the issuer MCP server tool.
   // No direct Skyfire API calls and no reliance on config-only fields like oauth.kya.
@@ -131,20 +134,19 @@ async function mintKyaAccessToken(input: {
   await client.connect(transport)
 
   try {
-    const result = await client.callTool({
+    const toolResult = await client.callTool({
       name: "create-kya-token",
       arguments: {
         // Let the issuer bind tokens to the target server if it supports it.
         target: input.targetServerName,
-        ...(buyerTag ? { buyerTag } : {}),
-        ...(sellerServiceId ? { sellerServiceId } : {}),
+        sellerServiceId,
       },
     })
 
     // The MCP SDK tool response shape is flexible; the mock issuer returns a JSON-ish string.
-    const text = Array.isArray((result as any).content)
-      ? (result as any).content.map((c: any) => c.text ?? "").join("\n")
-      : String((result as any).content ?? "")
+    const text = Array.isArray((toolResult as any).content)
+      ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
+      : String((toolResult as any).content ?? "")
 
     const maybe = (() => {
       try {

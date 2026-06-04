@@ -71,4 +71,9 @@ export const Flag = {
   get OPENCODE_CLIENT() {
     return process.env["OPENCODE_CLIENT"] ?? "cli"
   },
+
+  // KYA (Know Your Agent)
+  get OPENCODE_KYA_SELLER_SERVICE_ID() {
+    return process.env["OPENCODE_KYA_SELLER_SERVICE_ID"]
+  },
 }

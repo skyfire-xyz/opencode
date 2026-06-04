@@ -29,6 +29,7 @@ import open from "open"
 import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
+import { Flag } from "@opencode-ai/core/flag/flag"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -513,8 +514,7 @@ export const layer = Layer.effect(
                   const issuerRemote = issuer as unknown as ConfigMCP.Remote
                   const issuerHeaders = issuerRemote.headers ?? {}
 
-                  const buyerTag = process.env.OPENCODE_KYA_BUYER_TAG
-                  const sellerServiceId = process.env.OPENCODE_KYA_SELLER_SERVICE_ID
+                  const sellerServiceId = Flag.OPENCODE_KYA_SELLER_SERVICE_ID
 
                   if (!sellerServiceId) {
                     log.warn("kya mint skipped: missing OPENCODE_KYA_SELLER_SERVICE_ID", { key })
@@ -533,7 +533,6 @@ export const layer = Layer.effect(
                   log.info("kya mint: calling skyfire create-kya-token", {
                     key,
                     issuerUrl: issuerRemote.url,
-                    hasBuyerTag: !!buyerTag,
                     hasSellerServiceId: !!sellerServiceId,
                   })
 
@@ -542,9 +541,7 @@ export const layer = Layer.effect(
                       issuerClient.callTool({
                         name: "create-kya-token",
                         arguments: {
-                          // Skyfire QA issuer requires sellerServiceId.
                           sellerServiceId,
-                          ...(buyerTag ? { buyerTag } : {}),
                         },
                       }),
                     catch: (e) => (e instanceof Error ? e : new Error(String(e))),
