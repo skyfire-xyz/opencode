@@ -152,6 +152,34 @@ function extractJwtFromText(input: string): string | undefined {
   return m ? m[1] : undefined
 }
 
+/**
+ * Localhost/loopback targets don't exist in the Skyfire seller directory, so
+ * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so QA mints a valid KYA token against a known seller.
+ */
+const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
+
+function kyaSellerDomainOrUrl(targetUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(targetUrl).hostname.toLowerCase()
+    } catch {
+      return ""
+    }
+  })()
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  return isLocal || !host ? LOCAL_TARGET_PLACEHOLDER_DOMAIN : host
+}
+
 type KyaSupport = { supportsKya: boolean; authServer: string | undefined }
 type KyaMintResult =
   | { minted: true; kyaAdvertised: true }
@@ -163,13 +191,23 @@ function trySilentKya(args: {
   serverUrl: string
   auth: McpAuth.Interface
   issuer: ConfigMCP.Remote | undefined
-  sellerServiceId: string | undefined
+  /**
+   * Optional override. When set, OpenCode passes this as `sellerServiceId` to
+   * the Skyfire `create-kya-token` tool. When unset, the seller is derived
+   * from the target MCP URL and sent as `sellerDomainOrUrl` instead.
+   */
+  sellerServiceId?: string | undefined
 }) {
   return Effect.gen(function* () {
+    const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = args.sellerServiceId
+      ? { sellerServiceId: args.sellerServiceId }
+      : { sellerDomainOrUrl: kyaSellerDomainOrUrl(args.serverUrl) }
+
     log.info("kya connect preflight: starting", {
       name: args.name,
       url: args.serverUrl,
-      hasSellerServiceId: !!args.sellerServiceId,
+      sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
+      sellerValue: "sellerServiceId" in sellerArg ? sellerArg.sellerServiceId : sellerArg.sellerDomainOrUrl,
       hasSkyfire: !!args.issuer,
     })
 
@@ -226,14 +264,6 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
-    if (!args.sellerServiceId) {
-      return {
-        minted: false,
-        kyaAdvertised: true,
-        error: "Missing OPENCODE_KYA_SELLER_SERVICE_ID",
-      } satisfies KyaMintResult
-    }
-
     log.info("kya connect preflight: connecting to skyfire issuer", {
       name: args.name,
       issuerUrl: args.issuer.url,
@@ -253,12 +283,11 @@ function trySilentKya(args: {
     log.info("MCP.connect KYA: calling skyfire create-kya-token", {
       name: args.name,
       issuerUrl: args.issuer.url,
-      hasSellerServiceId: !!args.sellerServiceId,
+      sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
     })
 
     const toolResult = yield* Effect.tryPromise({
-      try: () =>
-        issuerClient.callTool({ name: "create-kya-token", arguments: { sellerServiceId: args.sellerServiceId } }),
+      try: () => issuerClient.callTool({ name: "create-kya-token", arguments: sellerArg }),
       catch: (e) => (e instanceof Error ? e : new Error(String(e))),
     }).pipe(Effect.ensuring(Effect.tryPromise(() => issuerClient.close()).pipe(Effect.ignore)))
 

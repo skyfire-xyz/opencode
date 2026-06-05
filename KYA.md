@@ -43,8 +43,12 @@ When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
 
 4. **KYA assertion minted by Skyfire MCP issuer**
 
-- OpenCode connects to the MCP server named `skyfire` and calls:
-- `tools/call { name: "create-kya-token", arguments: { sellerServiceId: "…" } }`
+- OpenCode connects to the MCP server named `skyfire` and calls
+  `tools/call { name: "create-kya-token", arguments: <seller-selector> }`.
+- The seller selector is one of:
+  - `{ sellerServiceId: "<UUID>" }` — used when `OPENCODE_KYA_SELLER_SERVICE_ID` is exported.
+  - `{ sellerDomainOrUrl: "<host>" }` — used otherwise, derived from the target MCP server URL.
+    For a localhost target the host is substituted with `mcp-server.com`.
 - Skyfire returns a **KYA JWT assertion** (not an OAuth access token).
 
 5. **Exchange assertion for an OAuth access token (JWT-bearer)**
@@ -126,15 +130,32 @@ Notes:
 - OpenCode will prefer StreamableHTTP; SSE 404 is treated as unsupported.
 - Set your Skyfire API key via the `skyfire` MCP server's `headers.skyfire-api-key`.
 
-### 4) Export KYA env vars
+### 4) Seller target selection
 
-The Skyfire QA issuer tool requires `sellerServiceId`:
+The Skyfire `create-kya-token` MCP tool needs exactly one seller selector
+(see [Skyfire create-token docs](https://docs.skyfire.xyz/reference/create-token)).
+OpenCode supports both, with the following precedence:
 
-```bash
-export OPENCODE_KYA_SELLER_SERVICE_ID="662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
-# Optional
-export OPENCODE_KYA_BUYER_TAG="your-buyer-tag"
-```
+1. **`sellerServiceId`** — explicit override via environment variable. If set,
+   OpenCode passes it directly to the tool:
+
+   ```bash
+   export OPENCODE_KYA_SELLER_SERVICE_ID="662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+   ```
+
+2. **`sellerDomainOrUrl`** — derived from the **target MCP server's URL** when
+   the env var above is unset:
+
+   - For a public MCP server like `https://mcp.example.com/mcp`, the seller is
+     `mcp.example.com`.
+   - For a localhost/loopback target (e.g. the mock at
+     `http://127.0.0.1:8787/mcp`), the hostname can't be resolved by the
+     Skyfire seller directory, so OpenCode substitutes a stable placeholder:
+     **`mcp-server.com`**.
+
+No environment variable is required by default; export
+`OPENCODE_KYA_SELLER_SERVICE_ID` only when you want to bind to a specific
+Skyfire seller service.
 
 Security note: do **not** commit API keys into the repo.
 
@@ -254,10 +275,19 @@ Fix:
 - confirm `mcp.skyfire` is configured and reachable
 - confirm `mcp.skyfire.headers.skyfire-api-key` is set
 
-### `kya mint skipped: missing OPENCODE_KYA_SELLER_SERVICE_ID`
+### `create-kya-token` returns a "seller not found" / 4xx error
 
-Cause: Skyfire QA requires the `sellerServiceId` argument.
+Cause: the seller selector OpenCode sent to Skyfire isn't registered in the
+seller directory for the API key's environment.
 
-Fix: export `OPENCODE_KYA_SELLER_SERVICE_ID` before starting OpenCode.
+Fix (pick one):
+
+- Export `OPENCODE_KYA_SELLER_SERVICE_ID=<uuid>` to pin a known seller service
+  by UUID (takes precedence over the URL-derived path).
+- Public MCP server: confirm the server's domain is registered as a seller in
+  the Skyfire environment matching your API key.
+- Localhost MCP server: confirm the placeholder `mcp-server.com` is registered
+  as a seller in the Skyfire QA environment, or set
+  `OPENCODE_KYA_SELLER_SERVICE_ID` to bypass the URL-derived path.
 
 ---

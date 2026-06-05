@@ -73,6 +73,9 @@ export const Flag = {
   },
 
   // KYA (Know Your Agent)
+  // Optional override for the Skyfire `create-kya-token` seller selector. When
+  // unset, the seller is derived from the target MCP server URL and sent as
+  // `sellerDomainOrUrl` instead.
   get OPENCODE_KYA_SELLER_SERVICE_ID() {
     return process.env["OPENCODE_KYA_SELLER_SERVICE_ID"]
   },
