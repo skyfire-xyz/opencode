@@ -79,7 +79,4 @@ export const Flag = {
   get OPENCODE_KYA_SELLER_SERVICE_ID() {
     return process.env["OPENCODE_KYA_SELLER_SERVICE_ID"]
   },
-  get OPENCODE_KYA_ISSUER_SERVERS() {
-    return process.env["OPENCODE_KYA_ISSUER_SERVERS"]
-  },
 }

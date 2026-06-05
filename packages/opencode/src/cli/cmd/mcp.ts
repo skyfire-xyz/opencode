@@ -20,7 +20,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Bus } from "../../bus"
 import { Effect } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerServerNames } from "../../mcp/kya"
+import { kyaIssuerFromConfig } from "../../mcp/kya"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
   switch (status) {
@@ -63,13 +63,6 @@ function configuredServers(config: Config.Info) {
 function oauthServers(config: Config.Info) {
   return configuredServers(config).filter(
     (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && entry[1].oauth !== false,
-  )
-}
-
-function kyaIssuerServers(config: Config.Info) {
-  const allowed = new Set(kyaIssuerServerNames())
-  return configuredServers(config).filter(
-    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && allowed.has(entry[0]),
   )
 }
 
@@ -133,22 +126,15 @@ async function mintKyaAccessToken(input: {
   auth: McpAuth.Interface
   targetServerUrl: string
 }): Promise<{ accessToken: string } | { error: string }> {
-  const issuers = kyaIssuerServers(input.config)
-  if (issuers.length === 0) {
+  const issuer = kyaIssuerFromConfig(input.config.mcp as Record<string, ConfigMCP.Info> | undefined)
+  if (!issuer) {
     return {
       error:
-        "No KYA issuer server found. Set OPENCODE_KYA_ISSUER_SERVERS to a comma-separated list of configured MCP server names (e.g. OPENCODE_KYA_ISSUER_SERVERS=mock-kya-mcp).",
+        'No KYA issuer server found. Add "capabilities": ["org.kyapay:kya"] to a configured remote MCP server (e.g. the skyfire server in opencode.jsonc).',
     }
   }
 
-  if (issuers.length > 1) {
-    return { error: `Multiple KYA issuers found in config: ${issuers.map(([name]) => name).join(", ")}` }
-  }
-
-  const [issuerName, issuerCfg] = issuers[0]
-  if (issuerCfg.type !== "remote") {
-    return { error: `KYA issuer ${issuerName} must be a remote MCP server` }
-  }
+  const [, issuerCfg] = issuer
 
   // Pick the seller selector: explicit env override wins; otherwise derive from
   // the target MCP server URL (with `mcp-server.com` substituted for localhost).

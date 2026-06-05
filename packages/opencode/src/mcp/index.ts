@@ -30,7 +30,7 @@ import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerServerNames } from "./kya"
+import { kyaIssuerFromConfig } from "./kya"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -693,27 +693,16 @@ export const layer = Layer.effect(
 
               return Effect.gen(function* () {
                 const s = yield* InstanceState.get(state)
-                const issuerNames = kyaIssuerServerNames()
-                if (issuerNames.length === 0) {
+                const issuer = kyaIssuerFromConfig(s.config)
+                if (!issuer) {
                   lastStatus = {
                     status: "failed" as const,
-                    error: "KYA supported but no issuers configured (set OPENCODE_KYA_ISSUER_SERVERS)",
+                    error:
+                      'KYA supported but no issuer configured. Add a remote MCP server with capabilities including "org.kyapay:kya".',
                   }
                   return undefined
                 }
-                const issuerRemote = Object.entries(s.config)
-                  .filter(([name]) => issuerNames.includes(name))
-                  .map(([, entry]) => entry)
-                  .filter((entry): entry is ConfigMCP.Remote => entry.type === "remote")
-                  .at(0)
-
-                if (!issuerRemote) {
-                  lastStatus = {
-                    status: "failed" as const,
-                    error: `KYA supported but none of the configured issuers are available in this instance (wanted: ${issuerNames.join(", ")})`,
-                  }
-                  return undefined
-                }
+                const issuerRemote = issuer[1]
 
                 const minted = yield* trySilentKya({
                   name: key,

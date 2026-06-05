@@ -12,9 +12,10 @@
       "type": "remote",
       "enabled": true,
       "url": "https://mcp-qa.skyfire.xyz/mcp",
+      "capabilities": ["org.kyapay:kya"],
       "headers": {
-        "skyfire-api-key": ""
-      }
+        "skyfire-api-key": "",
+      },
     }
   },
   "tools": {
