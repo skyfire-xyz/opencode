@@ -39,6 +39,10 @@ export type OAuth = Schema.Schema.Type<typeof OAuth>
 export const Remote = Schema.Struct({
   type: Schema.Literal("remote").annotate({ description: "Type of MCP server connection" }),
   url: Schema.String.annotate({ description: "URL of the remote MCP server" }),
+  transport: Schema.optional(Schema.Union([Schema.Literal("streamable_http"), Schema.Literal("sse")])).annotate({
+    description:
+      "Transport preference for remote MCP servers. Defaults to trying StreamableHTTP first, then SSE as a fallback.",
+  }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),

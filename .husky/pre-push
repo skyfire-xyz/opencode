@@ -18,14 +18,4 @@ if (process.versions.bun !== expectedBunVersion) {
 }
 '
 
-if [ "${HUSKY:-}" = "0" ]; then
-  echo "husky disabled (HUSKY=0); skipping pre-push checks"
-  exit 0
-fi
-
-if [ "${OPENCODE_SKIP_TYPECHECK:-}" = "1" ]; then
-  echo "skipping typecheck (OPENCODE_SKIP_TYPECHECK=1)"
-  exit 0
-fi
-
 bun typecheck
