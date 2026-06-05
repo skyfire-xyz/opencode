@@ -30,6 +30,7 @@ import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { kyaIssuerServerNames } from "./kya"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -662,13 +663,28 @@ export const layer = Layer.effect(
               const hintedDcr = lastError.message.includes("registration") || lastError.message.includes("client_id")
 
               return Effect.gen(function* () {
-                const cfgSvc = yield* Config.Service
-                const cfg = yield* cfgSvc.get()
-                const issuer = cfg.mcp?.skyfire
-                const issuerRemote =
-                  issuer && typeof issuer === "object" && issuer !== null && (issuer as any).type === "remote"
-                    ? (issuer as unknown as ConfigMCP.Remote)
-                    : undefined
+                const s = yield* InstanceState.get(state)
+                const issuerNames = kyaIssuerServerNames()
+                if (issuerNames.length === 0) {
+                  lastStatus = {
+                    status: "failed" as const,
+                    error: "KYA supported but no issuers configured (set OPENCODE_KYA_ISSUER_SERVERS)",
+                  }
+                  return undefined
+                }
+                const issuerRemote = Object.entries(s.config)
+                  .filter(([name]) => issuerNames.includes(name))
+                  .map(([, entry]) => entry)
+                  .filter((entry): entry is ConfigMCP.Remote => entry.type === "remote")
+                  .at(0)
+
+                if (!issuerRemote) {
+                  lastStatus = {
+                    status: "failed" as const,
+                    error: `KYA supported but none of the configured issuers are available in this instance (wanted: ${issuerNames.join(", ")})`,
+                  }
+                  return undefined
+                }
 
                 const minted = yield* trySilentKya({
                   name: key,
@@ -689,12 +705,6 @@ export const layer = Layer.effect(
                 // If minting succeeded but we didn't schedule a StreamableHTTP retry, just
                 // fall through and let the outer loop continue.
                 if (minted.minted) return undefined
-
-                return undefined
-
-                // If we minted a token, we either scheduled a retry (sentinel) or we can just
-                // fall through and let the outer loop continue.
-                if (minted) return undefined
 
                 // If KYA isn't available, and the error suggests DCR is required, surface that.
                 if (hintedDcr) {

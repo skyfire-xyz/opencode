@@ -20,6 +20,7 @@ import { Filesystem } from "@/util/filesystem"
 import { Bus } from "../../bus"
 import { Effect } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { kyaIssuerServerNames } from "../../mcp/kya"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
   switch (status) {
@@ -66,10 +67,9 @@ function oauthServers(config: Config.Info) {
 }
 
 function kyaIssuerServers(config: Config.Info) {
-  // Option A: issuer is selected by a naming convention so config stays valid
-  // under the published schema at https://opencode.ai/config.json.
+  const allowed = new Set(kyaIssuerServerNames())
   return configuredServers(config).filter(
-    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && entry[0] === "skyfire",
+    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && allowed.has(entry[0]),
   )
 }
 
@@ -107,7 +107,10 @@ async function mintKyaAccessToken(input: {
 }): Promise<{ accessToken: string } | { error: string }> {
   const issuers = kyaIssuerServers(input.config)
   if (issuers.length === 0) {
-    return { error: 'No KYA issuer server found (expected an MCP server named "skyfire")' }
+    return {
+      error:
+        "No KYA issuer server found. Set OPENCODE_KYA_ISSUER_SERVERS to a comma-separated list of configured MCP server names (e.g. OPENCODE_KYA_ISSUER_SERVERS=mock-kya-mcp).",
+    }
   }
 
   if (issuers.length > 1) {
