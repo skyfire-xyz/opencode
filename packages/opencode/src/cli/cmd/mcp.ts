@@ -100,10 +100,38 @@ function authState() {
   })
 }
 
+/**
+ * Localhost/loopback targets don't exist in the Skyfire seller directory, so
+ * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so QA mints a valid KYA token against a known seller.
+ */
+const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
+
+function kyaSellerDomainOrUrl(targetUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(targetUrl).hostname.toLowerCase()
+    } catch {
+      return ""
+    }
+  })()
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  return isLocal || !host ? LOCAL_TARGET_PLACEHOLDER_DOMAIN : host
+}
+
 async function mintKyaAccessToken(input: {
   config: Config.Info
   auth: McpAuth.Interface
-  targetServerName: string
+  targetServerUrl: string
 }): Promise<{ accessToken: string } | { error: string }> {
   const issuers = kyaIssuerServers(input.config)
   if (issuers.length === 0) {
@@ -119,10 +147,12 @@ async function mintKyaAccessToken(input: {
     return { error: `KYA issuer ${issuerName} must be a remote MCP server` }
   }
 
-  const sellerServiceId = Flag.OPENCODE_KYA_SELLER_SERVICE_ID
-  if (!sellerServiceId) {
-    return { error: "Missing OPENCODE_KYA_SELLER_SERVICE_ID" }
-  }
+  // Pick the seller selector: explicit env override wins; otherwise derive from
+  // the target MCP server URL (with `mcp-server.com` substituted for localhost).
+  const envSellerServiceId = Flag.OPENCODE_KYA_SELLER_SERVICE_ID
+  const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = envSellerServiceId
+    ? { sellerServiceId: envSellerServiceId }
+    : { sellerDomainOrUrl: kyaSellerDomainOrUrl(input.targetServerUrl) }
 
   // Schema-friendly path: mint tokens strictly via the issuer MCP server tool.
   // No direct Skyfire API calls and no reliance on config-only fields like oauth.kya.
@@ -136,11 +166,7 @@ async function mintKyaAccessToken(input: {
   try {
     const toolResult = await client.callTool({
       name: "create-kya-token",
-      arguments: {
-        // Let the issuer bind tokens to the target server if it supports it.
-        target: input.targetServerName,
-        sellerServiceId,
-      },
+      arguments: sellerArg,
     })
 
     // The MCP SDK tool response shape is flexible; the mock issuer returns a JSON-ish string.
@@ -791,7 +817,7 @@ export const McpDebugCommand = effectCmd({
 
           const oauthConfig = typeof serverConfig.oauth === "object" ? serverConfig.oauth : undefined
 
-          const minted = await mintKyaAccessToken({ config, auth, targetServerName: serverName })
+          const minted = await mintKyaAccessToken({ config, auth, targetServerUrl: serverConfig.url })
           if ("error" in minted) {
             prompts.log.warn(`KYA token mint skipped: ${minted.error}`)
           } else {
