@@ -204,6 +204,8 @@ const authServer = http.createServer((req, res) => {
       const assertion = params.get("assertion")
 
       // eslint-disable-next-line no-console
+      console.log("===== OAuth token exchange BEGIN (jwt-bearer) =====", { grantType, hasAssertion: !!assertion })
+      // eslint-disable-next-line no-console
       console.log("authServer: token(jwt-bearer) request", {
         grantType,
         hasAssertion: !!assertion,
@@ -286,6 +288,8 @@ const authServer = http.createServer((req, res) => {
             user,
             resourceAud,
           })
+          // eslint-disable-next-line no-console
+          console.log("===== OAuth token exchange END (access token issued) =====")
 
           json(res, 200, {
             access_token: access,
@@ -442,6 +446,8 @@ const mcpServer = http.createServer((req, res) => {
       })()
 
       // eslint-disable-next-line no-console
+      console.log("===== MCP auth flow BEGIN (401 challenge sent) =====", { reason })
+      // eslint-disable-next-line no-console
       console.log("mcpServer: unauthorized", {
         hasAuthHeader: !!auth,
         tokenPrefix: token ? prefix(token, 18) : undefined,
@@ -464,6 +470,8 @@ const mcpServer = http.createServer((req, res) => {
       scope: tokenScope,
       exp: tokenExp,
     })
+    // eslint-disable-next-line no-console
+    console.log("===== MCP auth flow END (request authorized with Bearer token) =====")
 
     let raw = ""
     req.on("data", (c) => (raw += c))

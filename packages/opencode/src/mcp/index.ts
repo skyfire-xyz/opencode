@@ -196,7 +196,7 @@ function trySilentKya(args: {
       ? { sellerServiceId: args.sellerServiceId }
       : { sellerDomainOrUrl: kyaSellerDomainOrUrl(args.serverUrl) }
 
-    log.info("kya connect preflight: starting", {
+    log.info("===== KYA auth flow BEGIN =====", {
       name: args.name,
       url: args.serverUrl,
       sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
@@ -395,6 +395,7 @@ function trySilentKya(args: {
         kyaAdvertised: false,
       } satisfies KyaMintResult),
     ),
+    Effect.tap((result) => Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result }))),
   )
 }
 
