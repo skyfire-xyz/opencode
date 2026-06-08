@@ -30,7 +30,7 @@ import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerFromConfig, extractJwtFromText } from "./kya"
+import { kyaIssuerFromConfig, extractJwtFromText, probeResourceMetadataUrl, hasKyaCapability } from "./kya"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -206,9 +206,17 @@ function trySilentKya(args: {
 
     const kyaSupport = yield* Effect.tryPromise({
       try: async (): Promise<KyaSupport> => {
+        // B1–B2: probe the MCP endpoint and read the RFC 9728 resource_metadata
+        // pointer from the 401, falling back to the default well-known location.
         const resourceOrigin = new URL(args.serverUrl).origin
-        log.info("kya connect preflight: fetching protected resource metadata", { name: args.name, resourceOrigin })
-        const protectedRes = await fetch(new URL("/.well-known/oauth-protected-resource", resourceOrigin), {
+        const resourceMetadataUrl =
+          (await probeResourceMetadataUrl(args.serverUrl)) ??
+          new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
+        log.info("kya connect preflight: fetching protected resource metadata", {
+          name: args.name,
+          resourceMetadataUrl,
+        })
+        const protectedRes = await fetch(resourceMetadataUrl, {
           headers: { accept: "application/json" },
         })
         if (!protectedRes.ok) return { supportsKya: false, authServer: undefined }
@@ -685,40 +693,44 @@ export const layer = Layer.effect(
               const hintedDcr = lastError.message.includes("registration") || lastError.message.includes("client_id")
 
               return Effect.gen(function* () {
-                const s = yield* InstanceState.get(state)
-                const issuer = kyaIssuerFromConfig(s.config)
-                if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                  // Default demo behavior: no issuer means we can't mint, and KYA is
-                  // the only sanctioned path, so stop here. Set
-                  // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
-                  lastStatus = {
-                    status: "failed" as const,
-                    error:
-                      'KYA supported but no issuer configured. Add a remote MCP server with capabilities including "org.kyapay:kya".',
+                // The issuer authenticates via its own headers, never via KYA — don't
+                // try to mint a KYA token for the issuer (it can't be its own issuer).
+                if (!hasKyaCapability(mcp)) {
+                  const s = yield* InstanceState.get(state)
+                  const issuer = kyaIssuerFromConfig(s.config)
+                  if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+                    // Default demo behavior: no issuer means we can't mint, and KYA is
+                    // the only sanctioned path, so stop here. Set
+                    // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
+                    lastStatus = {
+                      status: "failed" as const,
+                      error:
+                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities including "org.kyapay:kya".',
+                    }
+                    return undefined
                   }
-                  return undefined
+                  const issuerRemote = issuer?.[1]
+
+                  const minted = yield* trySilentKya({
+                    name: key,
+                    serverUrl: mcp.url,
+                    auth,
+                    issuer: issuerRemote,
+                    sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
+                  })
+
+                  // If we minted a token, retry the primary transport once so a single
+                  // user "connect" action can reach the connected state.
+                  if (minted.minted && name === "StreamableHTTP" && streamableHttpRetry === 0) {
+                    streamableHttpRetry = 1
+                    log.info("kya mint: stored token, retrying StreamableHTTP connect", { key })
+                    return undefined
+                  }
+
+                  // If minting succeeded but we didn't schedule a StreamableHTTP retry, just
+                  // fall through and let the outer loop continue.
+                  if (minted.minted) return undefined
                 }
-                const issuerRemote = issuer?.[1]
-
-                const minted = yield* trySilentKya({
-                  name: key,
-                  serverUrl: mcp.url,
-                  auth,
-                  issuer: issuerRemote,
-                  sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
-                })
-
-                // If we minted a token, retry the primary transport once so a single
-                // user "connect" action can reach the connected state.
-                if (minted.minted && name === "StreamableHTTP" && streamableHttpRetry === 0) {
-                  streamableHttpRetry = 1
-                  log.info("kya mint: stored token, retrying StreamableHTTP connect", { key })
-                  return undefined
-                }
-
-                // If minting succeeded but we didn't schedule a StreamableHTTP retry, just
-                // fall through and let the outer loop continue.
-                if (minted.minted) return undefined
 
                 // If KYA isn't available, and the error suggests DCR is required, surface that.
                 if (hintedDcr) {
@@ -1025,7 +1037,9 @@ export const layer = Layer.effect(
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
       Log.Default.info("MCP.connect called", { name })
       const mcp = yield* requireMcpConfig(name)
-      if (mcp.type === "remote") {
+      // The KYA issuer itself authenticates via its configured headers (e.g.
+      // skyfire-api-key), not via the KYA preflight — skip the probe/mint for it.
+      if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
         const cfgSvc = yield* Config.Service
         const cfg = yield* cfgSvc.get()
         const issuerRemote = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)?.[1]

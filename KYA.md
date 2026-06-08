@@ -28,14 +28,19 @@ It also includes instructions to run the full flow locally.
 
 When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
 
-1. **Connect attempt to the MCP endpoint**
-   - `POST http://127.0.0.1:8787/mcp`
-   - Mock MCP responds `401` with `WWW-Authenticate` challenge.
+1. **Unauthenticated probe (spec B1–B2)**
+   - `POST http://127.0.0.1:8787/mcp` with no `Authorization` header.
+   - Mock MCP responds `401` with a `WWW-Authenticate` challenge that may carry a
+     `resource_metadata="…"` pointer (RFC 9728).
 
-2. **Authorization server discovery**
-   - OpenCode uses RFC 9728 protected resource discovery:
+2. **Authorization server discovery (B3–B5)**
+   - OpenCode follows the `resource_metadata` pointer when present, otherwise
+     falls back to the default RFC 9728 location:
    - `GET http://127.0.0.1:8787/.well-known/oauth-protected-resource`
-   - Response points to the mock OAuth server on `8788`.
+   - Response points to the mock OAuth server on `8788`. OpenCode then reads the
+     AS metadata (RFC 8414, with OpenID configuration as a fallback) and checks
+     that `authorization_grant_profiles_supported` advertises the KYA profile
+     (`urn:ietf:params:oauth:grant-profile:kya`). If it doesn't, KYA is skipped.
 
 3. **Dynamic client registration (if needed)**
 
@@ -43,7 +48,9 @@ When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
 
 4. **KYA assertion minted by Skyfire MCP issuer**
 
-- OpenCode connects to the MCP server named `skyfire` and calls
+- OpenCode connects to the configured **KYA issuer** — the remote MCP server
+  whose `capabilities` include `org.kyapay:kya` (the server's name is irrelevant;
+  the example below uses `skyfire`) — and calls
   `tools/call { name: "create-kya-token", arguments: <seller-selector> }`.
 - The seller selector is one of:
   - `{ sellerServiceId: "<UUID>" }` — used when `OPENCODE_KYA_SELLER_SERVICE_ID` is exported.
@@ -68,6 +75,11 @@ When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
 ### Key point: no browser redirect
 
 For KYA, the flow is **non-interactive** (no user browser step). If something opens an `/authorize` URL, it usually means KYA detection or the jwt-bearer exchange failed.
+
+By default, if the server advertises KYA but no issuer is configured (or minting
+fails), OpenCode surfaces a clear failure rather than falling back to interactive
+OAuth. Set `OPENCODE_KYA_INTERACTIVE_FALLBACK=1` to instead fall through to the
+standard interactive Authorization Code + PKCE flow when KYA can't complete.
 
 ---
 
@@ -117,6 +129,7 @@ Example:
     "skyfire": {
       "type": "remote",
       "url": "http://mcp.skyfire.xyz/mcp",
+      "capabilities": ["org.kyapay:kya"],
       "headers": {
         "skyfire-api-key": "<your-skyfire-api-key>",
       },
@@ -128,7 +141,10 @@ Example:
 Notes:
 
 - OpenCode will prefer StreamableHTTP; SSE 404 is treated as unsupported.
-- Set your Skyfire API key via the `skyfire` MCP server's `headers.skyfire-api-key`.
+- Set your Skyfire API key via the issuer MCP server's `headers.skyfire-api-key`.
+- The KYA issuer is selected by **capability**, not by name: OpenCode uses the
+  first remote MCP server whose `capabilities` array contains `org.kyapay:kya`.
+  Omitting that entry means no issuer is found and KYA minting is skipped.
 
 ### 4) Seller target selection
 
@@ -205,8 +221,14 @@ You should see `mock-kya-mcp` become `connected`.
 With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs during the flow, including:
 
 - `service=mcp transport connect attempt`
-- `kya mint: calling skyfire create-kya-token`
-- `kya mint: skyfire tool response`
+- `kya connect preflight: fetching protected resource metadata`
+- `kya connect preflight: AS grant profiles`
+- `MCP.connect KYA: calling skyfire create-kya-token`
+- `kya connect preflight: skyfire tool response`
+- `kya connect preflight: extracted assertion`
+- `kya connect preflight: exchanging assertion for access token`
+- `kya connect preflight: token exchange success`
+- `kya connect preflight: stored access token`
 - `kya mint: stored token, retrying StreamableHTTP connect`
 
 ### 2) Mock OAuth server logs (port 8788)
@@ -266,14 +288,14 @@ Status: OpenCode treats SSE 404 as "unsupported" for MCP servers, so this should
 
 ---
 
-### `create-kya-token did not return a JWT`
+### `Could not extract JWT assertion from skyfire tool output` / `create-kya-token did not return a JWT assertion`
 
 Cause: the Skyfire MCP issuer did not return a string containing a JWT assertion.
 
 Fix:
 
-- confirm `mcp.skyfire` is configured and reachable
-- confirm `mcp.skyfire.headers.skyfire-api-key` is set
+- confirm the KYA issuer (the remote MCP server with `capabilities: ["org.kyapay:kya"]`) is configured and reachable
+- confirm its `headers.skyfire-api-key` is set
 
 ### `create-kya-token` returns a "seller not found" / 4xx error
 
