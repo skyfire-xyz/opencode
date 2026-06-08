@@ -110,6 +110,20 @@ Expected:
 
 ---
 
+### One-command local demo
+
+From the repo root, this starts both the mock MCP/OAuth server and the
+OpenCode instance server:
+
+```bash
+bun run demo:kya
+```
+
+This does not edit or validate `.opencode/opencode.jsonc`; keep your Skyfire
+MCP issuer configuration and API key there.
+
+---
+
 ### 3) Configure OpenCode to use the mock MCP server
 
 In the directory you’re running OpenCode against, add/update:
