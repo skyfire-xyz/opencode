@@ -206,7 +206,37 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 #### Web UI
 
-Open the UI you use that points at `http://localhost:4096`, then connect the `merchant-mcp` MCP server.
+The web frontend (`packages/app`, a SolidJS + Vite app) runs separately from the
+instance server and talks to it over HTTP.
+
+1. Keep the instance server from step 5 running on port `4096`.
+2. In a second terminal, from the repo root, start the frontend dev server:
+
+   ```bash
+   bun run dev:web
+   # equivalently: bun --cwd packages/app dev
+   ```
+
+   It serves on **`http://localhost:3000`**.
+
+3. By default the frontend connects to the instance server at
+   `http://localhost:4096`. If your server runs elsewhere, override it before
+   starting Vite:
+
+   ```bash
+   VITE_OPENCODE_SERVER_HOST=localhost VITE_OPENCODE_SERVER_PORT=4096 bun run dev:web
+   ```
+
+4. Open `http://localhost:3000`, select the project directory you started the
+   server against, then open the MCP dialog and connect `merchant-mcp`. This
+   issues `POST /mcp/merchant-mcp/connect` against the instance server — the same
+   entry point as the HTTP API below — and triggers the KYA preflight.
+
+> Note: the silent KYA flow is fully non-interactive, so it works over a remote
+> frontend. The interactive OAuth fallback, however, redirects to a loopback
+> callback on the **server** host (`http://127.0.0.1:19876/...`), so it only
+> completes when the browser and instance server share a machine unless a custom
+> `redirectUri` is configured.
 
 #### HTTP API
 
