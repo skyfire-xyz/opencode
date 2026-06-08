@@ -250,29 +250,29 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   /**
-   * Optional hook for MCP SDKs that support custom grant profiles.
+   * SDK grant-profile hooks (getTokensForMetadata / prepareTokenRequest).
    *
-   * If the connected Resource Authorization Server supports the KYA profile,
-   * we can obtain an access token without an interactive authorization_code flow.
+   * These intentionally return `undefined`. The KYA jwt-bearer exchange is NOT
+   * driven through this provider — it runs out-of-band in `trySilentKya`
+   * (see mcp/index.ts), which performs RFC 9728/8414 discovery, mints the KYA
+   * token from the issuer, exchanges it for an access token, and stores it via
+   * `saveTokens()` before the transport is retried. Returning `undefined` here
+   * keeps that flow authoritative and lets the SDK fall back to the interactive
+   * authorization_code path when KYA is unavailable.
+   *
+   * NOTE: a cleaner, more spec-native design would implement the jwt-bearer
+   * exchange directly in `prepareTokenRequest` (which the SDK calls in place of
+   * authorization_code when present) and retire the out-of-band path.
    */
   async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
-    // KYA is handled outside this provider (via the issuer MCP tool flow),
-    // but we keep this hook so the SDK can call it without crashing.
     const profiles = authorizationGrantProfilesSupported(metadata)
-    log.info("getTokensForMetadata: ignoring KYA grant profiles", {
+    log.info("getTokensForMetadata: deferring KYA to out-of-band trySilentKya", {
       mcpName: this.mcpName,
       profiles: profiles.slice(0, 8),
     })
     return undefined
   }
 
-  /**
-   * Provide a non-interactive token request for servers that advertise the KYA
-   * grant profile.
-   *
-   * The MCP SDK prefers prepareTokenRequest() over opening an interactive
-   * /authorize flow.
-   */
   async prepareTokenRequest(scope?: string): Promise<URLSearchParams | undefined> {
     return undefined
   }

@@ -79,4 +79,10 @@ export const Flag = {
   get OPENCODE_KYA_SELLER_SERVICE_ID() {
     return process.env["OPENCODE_KYA_SELLER_SERVICE_ID"]
   },
+  // When set, an auth-required server with no configured KYA issuer falls back to
+  // the interactive OAuth flow instead of hard-failing. Off by default to keep the
+  // demo's "KYA or bust" behavior.
+  get OPENCODE_KYA_INTERACTIVE_FALLBACK() {
+    return truthy("OPENCODE_KYA_INTERACTIVE_FALLBACK")
+  },
 }

@@ -20,7 +20,12 @@ import { Filesystem } from "@/util/filesystem"
 import { Bus } from "../../bus"
 import { Effect } from "effect"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerFromConfig } from "../../mcp/kya"
+import {
+  kyaIssuerFromConfig,
+  extractJwtFromText,
+  discoverResourceAuthServer,
+  exchangeAssertionForAccessToken,
+} from "../../mcp/kya"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
   switch (status) {
@@ -143,54 +148,45 @@ async function mintKyaAccessToken(input: {
     ? { sellerServiceId: envSellerServiceId }
     : { sellerDomainOrUrl: kyaSellerDomainOrUrl(input.targetServerUrl) }
 
-  // Schema-friendly path: mint tokens strictly via the issuer MCP server tool.
-  // No direct Skyfire API calls and no reliance on config-only fields like oauth.kya.
+  // Phase C — mint the KYA token (a JWT assertion) via the issuer MCP server tool.
   const transport = new StreamableHTTPClientTransport(new URL(issuerCfg.url), {
     requestInit: issuerCfg.headers ? { headers: issuerCfg.headers } : undefined,
   })
-
   const client = new Client({ name: "opencode-cli", version: InstallationVersion })
   await client.connect(transport)
 
+  let assertion: string | undefined
   try {
-    const toolResult = await client.callTool({
-      name: "create-kya-token",
-      arguments: sellerArg,
-    })
+    const request = { name: "create-kya-token", arguments: sellerArg }
+    prompts.log.info(`Sending create-kya-token request to ${issuerCfg.url}:\n    ${JSON.stringify(request)}`)
+    const toolResult = await client.callTool(request)
 
-    // The MCP SDK tool response shape is flexible; the mock issuer returns a JSON-ish string.
     const text = Array.isArray((toolResult as any).content)
       ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
       : String((toolResult as any).content ?? "")
 
-    const maybe = (() => {
-      try {
-        return JSON.parse(text)
-      } catch {
-        return undefined
-      }
-    })()
-
-    const accessToken = (() => {
-      switch (true) {
-        case typeof maybe !== "object" || maybe === null:
-          return undefined
-        case "accessToken" in maybe && typeof (maybe as any).accessToken === "string":
-          return (maybe as any).accessToken as string
-        case "access_token" in maybe && typeof (maybe as any).access_token === "string":
-          return (maybe as any).access_token as string
-        default:
-          return undefined
-      }
-    })()
-
-    if (!accessToken) {
-      return { error: `create-kya-token did not return an access token. Output: ${text.slice(0, 500)}` }
+    assertion = extractJwtFromText(text)
+    if (!assertion) {
+      return { error: `create-kya-token did not return a JWT assertion. Output: ${text.slice(0, 500)}` }
     }
-
-    return { accessToken }
   } finally {
     await client.close().catch(() => {})
+  }
+
+  // Phase B — discover the target server's Resource AS token endpoint.
+  const discovered = await discoverResourceAuthServer(input.targetServerUrl).catch(() => undefined)
+  if (!discovered) {
+    return { error: `Could not discover an authorization server / token endpoint for ${input.targetServerUrl}.` }
+  }
+
+  // Phase D — exchange the KYA assertion for an access token (RFC 7523 jwt-bearer).
+  prompts.log.info(`Exchanging KYA assertion for access token at ${discovered.tokenEndpoint}`)
+  try {
+    const accessToken = await exchangeAssertionForAccessToken(discovered.tokenEndpoint, assertion)
+    if (!accessToken) return { error: "Token exchange response did not include an access_token" }
+    return { accessToken }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
   }
 }
 

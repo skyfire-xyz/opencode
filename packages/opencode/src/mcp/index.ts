@@ -30,7 +30,7 @@ import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerFromConfig } from "./kya"
+import { kyaIssuerFromConfig, extractJwtFromText } from "./kya"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -143,13 +143,6 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
       if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
       return [value]
     })
-}
-
-function extractJwtFromText(input: string): string | undefined {
-  // Skyfire QA tool currently returns a human-readable string like:
-  // "Creation of KYA token for <id> is complete: <jwt>"
-  const m = input.match(/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
-  return m ? m[1] : undefined
 }
 
 /**
@@ -694,7 +687,10 @@ export const layer = Layer.effect(
               return Effect.gen(function* () {
                 const s = yield* InstanceState.get(state)
                 const issuer = kyaIssuerFromConfig(s.config)
-                if (!issuer) {
+                if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+                  // Default demo behavior: no issuer means we can't mint, and KYA is
+                  // the only sanctioned path, so stop here. Set
+                  // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
                   lastStatus = {
                     status: "failed" as const,
                     error:
@@ -702,7 +698,7 @@ export const layer = Layer.effect(
                   }
                   return undefined
                 }
-                const issuerRemote = issuer[1]
+                const issuerRemote = issuer?.[1]
 
                 const minted = yield* trySilentKya({
                   name: key,
@@ -1032,11 +1028,7 @@ export const layer = Layer.effect(
       if (mcp.type === "remote") {
         const cfgSvc = yield* Config.Service
         const cfg = yield* cfgSvc.get()
-        const issuer = cfg.mcp?.skyfire
-        const issuerRemote =
-          issuer && typeof issuer === "object" && issuer !== null && (issuer as any).type === "remote"
-            ? (issuer as unknown as ConfigMCP.Remote)
-            : undefined
+        const issuerRemote = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)?.[1]
 
         const minted = yield* trySilentKya({
           name,
