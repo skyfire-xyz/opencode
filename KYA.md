@@ -26,7 +26,7 @@ It also includes instructions to run the full flow locally.
 
 ## What happens when you connect
 
-When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
+When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
 
 1. **Unauthenticated probe (spec B1–B2)**
    - `POST http://127.0.0.1:8787/mcp` with no `Authorization` header.
@@ -70,7 +70,7 @@ When you connect an MCP server named `mock-kya-mcp`, OpenCode does (simplified):
    - `POST http://127.0.0.1:8787/mcp`
    - with `Authorization: Bearer <access_token>`
 
-- On success, OpenCode marks `mock-kya-mcp` as **connected** and loads tool definitions.
+- On success, OpenCode marks `merchant-mcp` as **connected** and loads tool definitions.
 
 ### Key point: no browser redirect
 
@@ -135,7 +135,7 @@ Example:
 ```jsonc
 {
   "mcp": {
-    "mock-kya-mcp": {
+    "merchant-mcp": {
       "type": "remote",
       "url": "http://127.0.0.1:8787/mcp",
     },
@@ -206,7 +206,7 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 #### Web UI
 
-Open the UI you use that points at `http://localhost:4096`, then connect the `mock-kya-mcp` MCP server.
+Open the UI you use that points at `http://localhost:4096`, then connect the `merchant-mcp` MCP server.
 
 #### HTTP API
 
@@ -214,7 +214,7 @@ Replace the directory with your actual project directory (URL-encoded):
 
 ```bash
 curl -sS -X POST \
-  'http://localhost:4096/mcp/mock-kya-mcp/connect?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
+  'http://localhost:4096/mcp/merchant-mcp/connect?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
 ```
 
 Check status:
@@ -224,7 +224,7 @@ curl -sS \
   'http://localhost:4096/mcp?directory=%2FUsers%2Fjamesschuler%2Fdev%2Fopencode' | jq
 ```
 
-You should see `mock-kya-mcp` become `connected`.
+You should see `merchant-mcp` become `connected`.
 
 ---
 

@@ -3,7 +3,7 @@
   "provider": {},
   "permission": {},
   "mcp": {
-    "mock-kya-mcp": {
+    "merchant-mcp": {
       "type": "remote",
       "enabled": true,
       "url": "http://127.0.0.1:8787/mcp"
@@ -14,8 +14,8 @@
       "url": "https://mcp-qa.skyfire.xyz/mcp",
       "capabilities": ["org.kyapay:kya"],
       "headers": {
-        "skyfire-api-key": "",
-      },
+        "skyfire-api-key": ""
+      }
     }
   },
   "tools": {
