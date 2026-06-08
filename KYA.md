@@ -20,7 +20,7 @@ It also includes instructions to run the full flow locally.
 | OpenCode instance server | UI/API that manages MCP connections               | `http://localhost:4096`      |
 | Mock MCP server          | Protected MCP resource (requires Bearer token)    | `http://127.0.0.1:8787`      |
 | Mock OAuth server        | OAuth AS (discovery/registration/token endpoints) | `http://127.0.0.1:8788`      |
-| Skyfire MCP issuer       | Mints a KYA JWT assertion via `create-kya-token`  | `http://mcp.skyfire.xyz/mcp` |
+| Skyfire MCP issuer       | Mints a KYA JWT assertion via configured KYA tool | `http://mcp.skyfire.xyz/mcp` |
 
 ---
 
@@ -49,8 +49,8 @@ When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
 4. **KYA assertion minted by Skyfire MCP issuer**
 
 - OpenCode connects to the configured **KYA issuer** — the remote MCP server
-  whose `capabilities` include `org.kyapay:kya` (the server's name is irrelevant;
-  the example below uses `skyfire`) — and calls
+  whose `capabilities` map includes `org.kyapay:kya` (the server's name is irrelevant;
+  the example below uses `skyfire`) — and calls the configured tool, e.g.
   `tools/call { name: "create-kya-token", arguments: <seller-selector> }`.
 - The seller selector is one of:
   - `{ sellerServiceId: "<UUID>" }` — used when `OPENCODE_KYA_SELLER_SERVICE_ID` is exported.
@@ -143,7 +143,11 @@ Example:
     "skyfire": {
       "type": "remote",
       "url": "http://mcp.skyfire.xyz/mcp",
-      "capabilities": ["org.kyapay:kya"],
+      "capabilities": {
+        "org.kyapay:kya": {
+          "tool": "create-kya-token",
+        },
+      },
       "headers": {
         "skyfire-api-key": "<your-skyfire-api-key>",
       },
@@ -157,7 +161,8 @@ Notes:
 - OpenCode will prefer StreamableHTTP; SSE 404 is treated as unsupported.
 - Set your Skyfire API key via the issuer MCP server's `headers.skyfire-api-key`.
 - The KYA issuer is selected by **capability**, not by name: OpenCode uses the
-  first remote MCP server whose `capabilities` array contains `org.kyapay:kya`.
+  first remote MCP server whose `capabilities` map contains `org.kyapay:kya`.
+  The nested `tool` value tells OpenCode which issuer MCP tool creates the KYA token.
   Omitting that entry means no issuer is found and KYA minting is skipped.
 
 ### 4) Seller target selection
@@ -237,7 +242,7 @@ With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs 
 - `service=mcp transport connect attempt`
 - `kya connect preflight: fetching protected resource metadata`
 - `kya connect preflight: AS grant profiles`
-- `MCP.connect KYA: calling skyfire create-kya-token`
+- `MCP.connect KYA: calling issuer KYA tool`
 - `kya connect preflight: skyfire tool response`
 - `kya connect preflight: extracted assertion`
 - `kya connect preflight: exchanging assertion for access token`
@@ -308,7 +313,7 @@ Cause: the Skyfire MCP issuer did not return a string containing a JWT assertion
 
 Fix:
 
-- confirm the KYA issuer (the remote MCP server with `capabilities: ["org.kyapay:kya"]`) is configured and reachable
+- confirm the KYA issuer (the remote MCP server with `capabilities["org.kyapay:kya"].tool`) is configured and reachable
 - confirm its `headers.skyfire-api-key` is set
 
 ### `create-kya-token` returns a "seller not found" / 4xx error

@@ -135,11 +135,9 @@ async function mintKyaAccessToken(input: {
   if (!issuer) {
     return {
       error:
-        'No KYA issuer server found. Add "capabilities": ["org.kyapay:kya"] to a configured remote MCP server (e.g. the skyfire server in opencode.jsonc).',
+        'No KYA issuer server found. Add "capabilities": { "org.kyapay:kya": { "tool": "create-kya-token" } } to a configured remote MCP server (e.g. the skyfire server in opencode.jsonc).',
     }
   }
-
-  const [, issuerCfg] = issuer
 
   // Pick the seller selector: explicit env override wins; otherwise derive from
   // the target MCP server URL (with `mcp-server.com` substituted for localhost).
@@ -149,16 +147,16 @@ async function mintKyaAccessToken(input: {
     : { sellerDomainOrUrl: kyaSellerDomainOrUrl(input.targetServerUrl) }
 
   // Phase C — mint the KYA token (a JWT assertion) via the issuer MCP server tool.
-  const transport = new StreamableHTTPClientTransport(new URL(issuerCfg.url), {
-    requestInit: issuerCfg.headers ? { headers: issuerCfg.headers } : undefined,
+  const transport = new StreamableHTTPClientTransport(new URL(issuer.config.url), {
+    requestInit: issuer.config.headers ? { headers: issuer.config.headers } : undefined,
   })
   const client = new Client({ name: "opencode-cli", version: InstallationVersion })
   await client.connect(transport)
 
   let assertion: string | undefined
   try {
-    const request = { name: "create-kya-token", arguments: sellerArg }
-    prompts.log.info(`Sending create-kya-token request to ${issuerCfg.url}:\n    ${JSON.stringify(request)}`)
+    const request = { name: issuer.tool, arguments: sellerArg }
+    prompts.log.info(`Sending ${issuer.tool} request to ${issuer.config.url}:\n    ${JSON.stringify(request)}`)
     const toolResult = await client.callTool(request)
 
     const text = Array.isArray((toolResult as any).content)
@@ -167,7 +165,7 @@ async function mintKyaAccessToken(input: {
 
     assertion = extractJwtFromText(text)
     if (!assertion) {
-      return { error: `create-kya-token did not return a JWT assertion. Output: ${text.slice(0, 500)}` }
+      return { error: `${issuer.tool} did not return a JWT assertion. Output: ${text.slice(0, 500)}` }
     }
   } finally {
     await client.close().catch(() => {})

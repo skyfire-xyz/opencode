@@ -30,7 +30,7 @@ import { Effect, Exit, Layer, Option, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { Flag } from "@opencode-ai/core/flag/flag"
-import { kyaIssuerFromConfig, extractJwtFromText, probeResourceMetadataUrl, hasKyaCapability } from "./kya"
+import { type KyaIssuer, kyaIssuerFromConfig, extractJwtFromText, probeResourceMetadataUrl, hasKyaCapability } from "./kya"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 
@@ -183,10 +183,10 @@ function trySilentKya(args: {
   name: string
   serverUrl: string
   auth: McpAuth.Interface
-  issuer: ConfigMCP.Remote | undefined
+  issuer: KyaIssuer | undefined
   /**
    * Optional override. When set, OpenCode passes this as `sellerServiceId` to
-   * the Skyfire `create-kya-token` tool. When unset, the seller is derived
+   * the configured Skyfire KYA tool. When unset, the seller is derived
    * from the target MCP URL and sent as `sellerDomainOrUrl` instead.
    */
   sellerServiceId?: string | undefined
@@ -261,18 +261,22 @@ function trySilentKya(args: {
       return {
         minted: false,
         kyaAdvertised: true,
-        error: "KYA supported but no issuer configured (expected mcp.skyfire)",
+        error:
+          'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
       } satisfies KyaMintResult
     }
+    const issuer = args.issuer
 
     log.info("kya connect preflight: connecting to skyfire issuer", {
       name: args.name,
-      issuerUrl: args.issuer.url,
-      hasHeaders: !!args.issuer.headers && Object.keys(args.issuer.headers).length > 0,
+      issuer: issuer.name,
+      issuerUrl: issuer.config.url,
+      issuerTool: issuer.tool,
+      hasHeaders: !!issuer.config.headers && Object.keys(issuer.config.headers).length > 0,
     })
 
-    const issuerTransport = new StreamableHTTPClientTransport(new URL(args.issuer.url), {
-      requestInit: { headers: args.issuer.headers ?? {} },
+    const issuerTransport = new StreamableHTTPClientTransport(new URL(issuer.config.url), {
+      requestInit: { headers: issuer.config.headers ?? {} },
     })
 
     const issuerClient = new Client({ name: "opencode", version: InstallationVersion })
@@ -281,14 +285,16 @@ function trySilentKya(args: {
       catch: (e) => (e instanceof Error ? e : new Error(String(e))),
     })
 
-    log.info("MCP.connect KYA: calling skyfire create-kya-token", {
+    log.info("MCP.connect KYA: calling issuer KYA tool", {
       name: args.name,
-      issuerUrl: args.issuer.url,
+      issuer: issuer.name,
+      issuerUrl: issuer.config.url,
+      issuerTool: issuer.tool,
       sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
     })
 
     const toolResult = yield* Effect.tryPromise({
-      try: () => issuerClient.callTool({ name: "create-kya-token", arguments: sellerArg }),
+      try: () => issuerClient.callTool({ name: issuer.tool, arguments: sellerArg }),
       catch: (e) => (e instanceof Error ? e : new Error(String(e))),
     }).pipe(Effect.ensuring(Effect.tryPromise(() => issuerClient.close()).pipe(Effect.ignore)))
 
@@ -705,17 +711,15 @@ export const layer = Layer.effect(
                     lastStatus = {
                       status: "failed" as const,
                       error:
-                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities including "org.kyapay:kya".',
+                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
                     }
                     return undefined
                   }
-                  const issuerRemote = issuer?.[1]
-
                   const minted = yield* trySilentKya({
                     name: key,
                     serverUrl: mcp.url,
                     auth,
-                    issuer: issuerRemote,
+                    issuer,
                     sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
                   })
 
@@ -1042,13 +1046,13 @@ export const layer = Layer.effect(
       if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
         const cfgSvc = yield* Config.Service
         const cfg = yield* cfgSvc.get()
-        const issuerRemote = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)?.[1]
+        const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
 
         const minted = yield* trySilentKya({
           name,
           serverUrl: mcp.url,
           auth,
-          issuer: issuerRemote,
+          issuer,
           sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
         })
 
