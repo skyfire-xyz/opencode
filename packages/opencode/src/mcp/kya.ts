@@ -3,18 +3,38 @@ import { ConfigMCP } from "@/config/mcp"
 /** Capability URI an MCP server advertises to act as a KYA token issuer. */
 export const KYA_CAPABILITY = "org.kyapay:kya"
 
+export type KyaIssuer = {
+  name: string
+  config: ConfigMCP.Remote
+  tool: string
+}
+
 /** Whether an MCP server config advertises the KYA issuer capability. */
 export function hasKyaCapability(config: ConfigMCP.Info | undefined): boolean {
-  return !!config && "capabilities" in config && !!config.capabilities?.includes(KYA_CAPABILITY)
+  if (!config || !("capabilities" in config) || !config.capabilities) return false
+  if (Array.isArray(config.capabilities)) return config.capabilities.includes(KYA_CAPABILITY)
+  return KYA_CAPABILITY in config.capabilities
 }
 
 /** Find the first configured remote MCP server that advertises the KYA capability. */
-export function kyaIssuerFromConfig(
-  config: Record<string, ConfigMCP.Info> | undefined,
-): [string, ConfigMCP.Remote] | undefined {
-  return Object.entries(config ?? {}).find(
-    (entry): entry is [string, ConfigMCP.Remote] => hasKyaCapability(entry[1]),
-  )
+export function kyaIssuerFromConfig(config: Record<string, ConfigMCP.Info> | undefined): KyaIssuer | undefined {
+  return Object.entries(config ?? {})
+    .map(([name, entry]) => {
+      if (entry.type !== "remote" || !hasKyaCapability(entry)) return undefined
+      const tool = kyaCapabilityTool(entry)
+      if (!tool) return undefined
+      return { name, config: entry, tool } satisfies KyaIssuer
+    })
+    .find((entry) => !!entry)
+}
+
+function kyaCapabilityTool(config: ConfigMCP.Remote): string | undefined {
+  if (!config.capabilities) return undefined
+  if (Array.isArray(config.capabilities)) {
+    return config.capabilities.includes(KYA_CAPABILITY) ? "create-kya-token" : undefined
+  }
+  const capability = config.capabilities[KYA_CAPABILITY]
+  return capability?.tool?.trim() || undefined
 }
 
 /**

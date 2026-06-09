@@ -39,6 +39,13 @@ export const OAuth = Schema.Struct({
 }).annotate({ identifier: "McpOAuthConfig" })
 export type OAuth = DeepMutable<Schema.Schema.Type<typeof OAuth>>
 
+export const Capability = Schema.Struct({
+  tool: Schema.optional(Schema.String).annotate({
+    description: "MCP tool name to call for this capability.",
+  }),
+}).annotate({ identifier: "McpCapabilityConfig" })
+export type Capability = DeepMutable<Schema.Schema.Type<typeof Capability>>
+
 export const Remote = Schema.Struct({
   type: Schema.Literal("remote").annotate({ description: "Type of MCP server connection" }),
   url: Schema.String.annotate({ description: "URL of the remote MCP server" }),
@@ -47,9 +54,14 @@ export const Remote = Schema.Struct({
       "Transport preference for remote MCP servers. Defaults to trying StreamableHTTP first, then SSE as a fallback.",
   }),
   capabilities: Schema.optional(
-    Schema.Array(Schema.String).annotate({
-      description: "List of capability URIs supported by this MCP server (e.g. org.kyapay:kya)",
-    }),
+    Schema.Union([
+      Schema.Record(Schema.String, Capability).annotate({
+        description: 'Capability configuration keyed by URI (e.g. { "org.kyapay:kya": { "tool": "create-kya-token" } }).',
+      }),
+      Schema.Array(Schema.String).annotate({
+        description: "Legacy list of capability URIs supported by this MCP server (e.g. org.kyapay:kya).",
+      }),
+    ]),
   ).annotate({ description: "Capabilities supported by this MCP server" }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
