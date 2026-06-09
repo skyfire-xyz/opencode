@@ -263,6 +263,60 @@ You should see `merchant-mcp` become `connected`.
 
 ---
 
+## Testing the interactive OAuth fallback
+
+KYA is an optimization layered on top of standard OAuth. To exercise the
+interactive Authorization Code + PKCE fallback locally, run the mock with KYA
+disabled so the AS behaves like a vanilla OAuth server.
+
+1. Start the mock servers with `MOCK_DISABLE_KYA=1`:
+
+   ```bash
+   MOCK_DISABLE_KYA=1 bun run packages/opencode/script/mock-mcp-kya-server.ts
+   ```
+
+   The AS now omits `kya` from `authorization_grant_profiles_supported` and
+   serves an auto-approving `/authorize` endpoint plus an `authorization_code`
+   token grant (PKCE `S256` enforced). The startup banner shows
+   `Mode: interactive (KYA disabled)`.
+
+2. Configure only the protected server — no KYA issuer is needed:
+
+   ```jsonc
+   { "mcp": { "merchant-mcp": { "type": "remote", "url": "http://127.0.0.1:8787/mcp" } } }
+   ```
+
+3. Start the OpenCode server with the fallback flag so an auth-required server
+   with no issuer falls through to interactive OAuth instead of hard-failing:
+
+   ```bash
+   OPENCODE_KYA_INTERACTIVE_FALLBACK=1 bun dev serve --port 4096 --log-level DEBUG --print-logs
+   ```
+
+4. Trigger auth, either way:
+
+   - **Automatic fallback:** connect the server (web UI, or
+     `POST /mcp/merchant-mcp/connect`). With the flag set, the status becomes
+     `needs_auth` — without it you'd get a `failed` "KYA supported but no issuer
+     configured". Then complete it with `opencode mcp auth merchant-mcp`.
+   - **Direct:** `opencode mcp auth merchant-mcp` runs the interactive flow
+     regardless of connect state (this path doesn't depend on the flag).
+
+   `opencode mcp auth` opens the browser at the mock `/authorize`, which
+   auto-approves and redirects to the loopback callback
+   (`http://127.0.0.1:19876/mcp/oauth/callback`); OpenCode exchanges the code at
+   `/token` and stores the resulting access token.
+
+In the mock logs you'll see the interactive markers:
+`OAuth interactive flow BEGIN (authorization_code)` → `authServer: authorize -> redirect`
+→ `OAuth token exchange BEGIN/END (authorization_code)` → `OAuth interactive flow END`.
+
+> Because the callback is a server-host loopback (`127.0.0.1:19876`), run the
+> browser on the same machine as the OpenCode server, or set a custom
+> `oauth.redirectUri` on the MCP server config.
+
+---
+
 ## How to verify the token mint + MCP auth works
 
 ### 1) OpenCode logs (port 4096)

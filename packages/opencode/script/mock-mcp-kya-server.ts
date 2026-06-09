@@ -45,6 +45,46 @@ const seenAssertionJtis = new Map<string, number>()
 // In-memory OAuth client registrations
 let clientSeq = 0
 
+// In-memory authorization codes for the interactive Authorization Code + PKCE flow.
+type AuthCodeEntry = {
+  codeChallenge?: string
+  codeChallengeMethod: string
+  redirectUri: string
+  scope: string
+  clientId?: string
+  exp: number
+}
+const authCodes = new Map<string, AuthCodeEntry>()
+
+// When MOCK_DISABLE_KYA is set, the AS stops advertising the KYA grant profile so
+// it behaves like a vanilla OAuth server — useful for testing the interactive
+// Authorization Code + PKCE fallback (see OPENCODE_KYA_INTERACTIVE_FALLBACK).
+const disableKya = ["1", "true"].includes((process.env.MOCK_DISABLE_KYA ?? "").toLowerCase())
+
+const KYA_GRANT_PROFILES = [
+  // Full URNs (per ID-JAG / KYA grant profile draft text in the spec doc)
+  "urn:ietf:params:oauth:grant-profile:id-jag",
+  "urn:ietf:params:oauth:grant-profile:kya",
+  // Compatibility: some clients match on the short token
+  "kya",
+]
+
+function asMetadata() {
+  return {
+    issuer: authOrigin,
+    authorization_endpoint: `${authOrigin}/authorize`,
+    token_endpoint: `${authOrigin}/token`,
+    registration_endpoint: `${authOrigin}/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: [
+      "authorization_code",
+      ...(disableKya ? [] : ["urn:ietf:params:oauth:grant-type:jwt-bearer"]),
+    ],
+    code_challenge_methods_supported: ["S256", "plain"],
+    authorization_grant_profiles_supported: disableKya ? [] : KYA_GRANT_PROFILES,
+  }
+}
+
 function header(req: http.IncomingMessage, key: string) {
   const value = req.headers[key.toLowerCase()]
   if (typeof value === "string") return value
@@ -134,36 +174,57 @@ const authServer = http.createServer((req, res) => {
   console.log("authServer: request", { method: req.method, path: url.pathname })
 
   // --- OAuth / OIDC discovery (Resource Authorization Server metadata) ---
-  if (req.method === "GET" && url.pathname === "/.well-known/oauth-authorization-server") {
-    return json(res, 200, {
-      issuer: authOrigin,
-      authorization_endpoint: `${authOrigin}/authorize`,
-      token_endpoint: `${authOrigin}/token`,
-      registration_endpoint: `${authOrigin}/register`,
-      response_types_supported: ["code"],
-      authorization_grant_profiles_supported: [
-        // Full URNs (per ID-JAG / KYA grant profile draft text in the spec doc)
-        "urn:ietf:params:oauth:grant-profile:id-jag",
-        "urn:ietf:params:oauth:grant-profile:kya",
-        // Compatibility: some clients match on the short token
-        "kya",
-      ],
-    })
+  if (
+    req.method === "GET" &&
+    (url.pathname === "/.well-known/oauth-authorization-server" ||
+      url.pathname === "/.well-known/openid-configuration")
+  ) {
+    return json(res, 200, asMetadata())
   }
 
-  if (req.method === "GET" && url.pathname === "/.well-known/openid-configuration") {
-    return json(res, 200, {
-      issuer: authOrigin,
-      authorization_endpoint: `${authOrigin}/authorize`,
-      token_endpoint: `${authOrigin}/token`,
-      registration_endpoint: `${authOrigin}/register`,
-      response_types_supported: ["code"],
-      authorization_grant_profiles_supported: [
-        "urn:ietf:params:oauth:grant-profile:id-jag",
-        "urn:ietf:params:oauth:grant-profile:kya",
-        "kya",
-      ],
+  // --- OAuth authorization endpoint (Authorization Code + PKCE) ---
+  // The mock auto-approves (no consent UI) and redirects straight back with a code.
+  if (req.method === "GET" && url.pathname === "/authorize") {
+    const params = url.searchParams
+    const responseType = params.get("response_type")
+    const redirectUri = params.get("redirect_uri")
+    const state = params.get("state") ?? undefined
+    const scope = params.get("scope") ?? "mcp"
+    const clientId = params.get("client_id") ?? undefined
+    const codeChallenge = params.get("code_challenge") ?? undefined
+    const codeChallengeMethod = params.get("code_challenge_method") ?? "plain"
+
+    // eslint-disable-next-line no-console
+    console.log("===== OAuth interactive flow BEGIN (authorization_code) =====", {
+      hasRedirectUri: !!redirectUri,
+      hasPkce: !!codeChallenge,
+      codeChallengeMethod,
     })
+
+    if (responseType !== "code" || !redirectUri) {
+      return json(res, 400, {
+        error: "invalid_request",
+        error_description: "expected response_type=code and redirect_uri",
+      })
+    }
+
+    const code = crypto.randomUUID()
+    const now = Math.floor(Date.now() / 1000)
+    authCodes.set(code, { codeChallenge, codeChallengeMethod, redirectUri, scope, clientId, exp: now + 300 })
+
+    const location = new URL(redirectUri)
+    location.searchParams.set("code", code)
+    if (state) location.searchParams.set("state", state)
+
+    // eslint-disable-next-line no-console
+    console.log("authServer: authorize -> redirect", {
+      redirectTo: `${location.origin}${location.pathname}`,
+      codePrefix: prefix(code, 8),
+    })
+
+    res.writeHead(302, { location: location.toString() })
+    res.end()
+    return
   }
 
   // --- OAuth dynamic client registration ---
@@ -202,6 +263,75 @@ const authServer = http.createServer((req, res) => {
       const params = new URLSearchParams(raw)
       const grantType = params.get("grant_type")
       const assertion = params.get("assertion")
+
+      // --- Authorization Code + PKCE grant (interactive fallback) ---
+      if (grantType === "authorization_code") {
+        const code = params.get("code")
+        const redirectUri = params.get("redirect_uri")
+        const codeVerifier = params.get("code_verifier")
+        // eslint-disable-next-line no-console
+        console.log("===== OAuth token exchange BEGIN (authorization_code) =====", {
+          hasCode: !!code,
+          hasVerifier: !!codeVerifier,
+        })
+
+        if (!code) return json(res, 400, { error: "invalid_request", error_description: "missing code" })
+        const entry = authCodes.get(code)
+        authCodes.delete(code) // single-use
+        const now = Math.floor(Date.now() / 1000)
+        if (!entry || entry.exp < now) {
+          return json(res, 400, { error: "invalid_grant", error_description: "unknown or expired code" })
+        }
+        if (entry.redirectUri !== redirectUri) {
+          return json(res, 400, { error: "invalid_grant", error_description: "redirect_uri mismatch" })
+        }
+        if (entry.codeChallenge) {
+          const computed =
+            entry.codeChallengeMethod === "S256"
+              ? crypto
+                  .createHash("sha256")
+                  .update(codeVerifier ?? "")
+                  .digest("base64url")
+              : (codeVerifier ?? "")
+          if (!codeVerifier || computed !== entry.codeChallenge) {
+            return json(res, 400, { error: "invalid_grant", error_description: "PKCE verification failed" })
+          }
+        }
+
+        const expiresIn = 3600
+        const accessExp = now + expiresIn
+        const scope = entry.scope
+        const user = process.env.MOCK_INTERACTIVE_USER ?? "interactive-user@example.com"
+        const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? mcpOrigin
+        const access = signJwt(
+          { iss: authOrigin, aud: resourceAud, sub: user, scope, iat: now, exp: accessExp, jti: crypto.randomUUID() },
+          mockSigningSecret,
+        )
+        issuedTokens.set(access, {
+          accessToken: access,
+          active: true,
+          scope,
+          sub: user,
+          user,
+          clientId: entry.clientId,
+          exp: accessExp,
+          iat: now,
+        })
+
+        // eslint-disable-next-line no-console
+        console.log("authServer: token issued (authorization_code)", {
+          accessTokenPrefix: prefix(access, 20),
+          scope,
+          user,
+          resourceAud,
+        })
+        // eslint-disable-next-line no-console
+        console.log("===== OAuth token exchange END (access token issued) =====")
+        // eslint-disable-next-line no-console
+        console.log("===== OAuth interactive flow END (authorization_code) =====")
+
+        return json(res, 200, { access_token: access, token_type: "Bearer", expires_in: expiresIn, scope })
+      }
 
       // eslint-disable-next-line no-console
       console.log("===== OAuth token exchange BEGIN (jwt-bearer) =====", { grantType, hasAssertion: !!assertion })
@@ -606,7 +736,11 @@ authServer.listen(authPort, "127.0.0.1", () => {
   // eslint-disable-next-line no-console
   console.log(`mock OAuth Auth Server (KYA) listening: ${authOrigin}`)
   // eslint-disable-next-line no-console
+  console.log(`  Mode:            ${disableKya ? "interactive (KYA disabled)" : "KYA jwt-bearer"}`)
+  // eslint-disable-next-line no-console
   console.log(`  OAuth metadata:  ${authOrigin}/.well-known/oauth-authorization-server`)
+  // eslint-disable-next-line no-console
+  console.log(`  Authorize:       ${authOrigin}/authorize`)
   // eslint-disable-next-line no-console
   console.log(`  Token endpoint:  ${authOrigin}/token`)
 })
