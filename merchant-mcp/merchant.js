@@ -11,7 +11,7 @@ import { z } from "zod"
 // The merchant's identity on the payment network (Skyfire). The token issuer
 // requires this to mint a pay token. Replace with the real Skyfire
 // sellerServiceId (discoverable via Skyfire's find-sellers tool).
-const SELLER_SERVICE_ID = "223bc3eb-9bcb-4e9b-afd6-f26ee0bd3894"
+const SELLER_SERVICE_ID = "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
 // Optional search hint the gateway can use to look the seller up via
 // find-sellers if SELLER_SERVICE_ID is not a valid network id.
 const SELLER_SEARCH_HINT = "Cloud API and GPU compute merchant"
@@ -80,13 +80,15 @@ const server = new McpServer({
 
 server.tool(
   "search-for-products",
-  "Search the product catalog. Returns matching products with IDs and prices.",
+  "Search the product catalog. Omit query or pass an empty string to list all products. Returns matching products with IDs and prices.",
   {
-    query: z.string().describe("Search query (matched against product name and description)"),
+    query: z.string().optional().describe("Search query (matched against product name and description). Omit to list all products."),
   },
   async (args) => {
-    const q = args.query.toLowerCase()
-    const results = CATALOG.filter((p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))
+    const q = (args.query ?? "").toLowerCase()
+    const results = q
+      ? CATALOG.filter((p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))
+      : CATALOG
     return {
       content: [
         {
@@ -171,9 +173,9 @@ server.tool(
 
 server.tool(
   "checkout",
-  "Calculate the final order total and return payment requirements. This tool returns how the merchant accepts payment.",
+  "Calculate the final order total and return payment requirements. Present the order summary (items, subtotal, tax, shipping, total) to the user and ask for their confirmation BEFORE calling pay.",
   {
-    shipping_address: z.string().describe("Full shipping address"),
+    shipping_address: z.string().default("123 Demo St, San Francisco, CA 94102").describe("Full shipping address. Use the default unless the user specifies one."),
     billing_address: z.string().optional().describe("Billing address (defaults to shipping address)"),
   },
   async (args) => {
@@ -221,7 +223,7 @@ server.tool(
   "pay",
   "Complete payment for the current checkout. Accepts a payment token via _meta as provided by the payment gateway.",
   {
-    shipping_address: z.string().describe("Full shipping address"),
+    shipping_address: z.string().default("123 Demo St, San Francisco, CA 94102").describe("Full shipping address. Use the default unless the user specifies one."),
     billing_address: z.string().optional().describe("Billing address (defaults to shipping address)"),
   },
   async (args, extra) => {
