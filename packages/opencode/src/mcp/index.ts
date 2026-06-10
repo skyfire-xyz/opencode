@@ -705,17 +705,6 @@ export const layer = Layer.effect(
                 if (!hasKyaCapability(mcp)) {
                   const s = yield* InstanceState.get(state)
                   const issuer = kyaIssuerFromConfig(s.config)
-                  if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                    // Default demo behavior: no issuer means we can't mint, and KYA is
-                    // the only sanctioned path, so stop here. Set
-                    // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
-                    lastStatus = {
-                      status: "failed" as const,
-                      error:
-                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
-                    }
-                    return undefined
-                  }
                   const minted = yield* trySilentKya({
                     name: key,
                     serverUrl: mcp.url,
@@ -735,6 +724,22 @@ export const layer = Layer.effect(
                   // If minting succeeded but we didn't schedule a StreamableHTTP retry, just
                   // fall through and let the outer loop continue.
                   if (minted.minted) return undefined
+
+                  // The server *advertises* KYA but we couldn't mint (e.g. no issuer
+                  // configured). By default surface a clear failure rather than dropping
+                  // to interactive OAuth; OPENCODE_KYA_INTERACTIVE_FALLBACK=1 opts into the
+                  // interactive fallback. When KYA isn't advertised at all, fall through to
+                  // the standard interactive path below (spec §5.5).
+                  if (minted.kyaAdvertised && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+                    lastStatus = {
+                      status: "failed" as const,
+                      error:
+                        "error" in minted
+                          ? minted.error
+                          : "KYA is advertised by the server but silent token minting failed",
+                    }
+                    return undefined
+                  }
                 }
 
                 // If KYA isn't available, and the error suggests DCR is required, surface that.
@@ -1057,15 +1062,16 @@ export const layer = Layer.effect(
           sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
         })
 
-        if (minted.kyaAdvertised && !minted.minted) {
+        if (minted.kyaAdvertised && !minted.minted && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
           const s = yield* InstanceState.get(state)
           const message =
             "error" in minted && typeof (minted as any).error === "string"
               ? (minted as any).error
               : "KYA is advertised by the server but silent token minting failed"
 
-          // KYA is advertised, so interactive OAuth is not the desired path in this demo.
-          // Surface a clear failure and stop here.
+          // KYA is advertised but minting failed. By default interactive OAuth is not the
+          // sanctioned path in this demo, so surface a clear failure and stop here.
+          // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 falls through to createAndStore (interactive).
           s.status[name] = { status: "failed" as const, error: message }
           yield* bus
             .publish(TuiEvent.ToastShow, {
