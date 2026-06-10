@@ -45,23 +45,29 @@ function getAuthStatusText(status: MCP.AuthStatus): string {
 type McpEntry = NonNullable<Config.Info["mcp"]>[string]
 
 type McpConfigured = ConfigMCP.Info
-function isMcpConfigured(config: McpEntry): config is McpConfigured {
+function isMcpConfigured(config: unknown): config is McpConfigured {
   return typeof config === "object" && config !== null && "type" in config
 }
 
-type McpRemote = Extract<McpConfigured, { type: "remote" }>
-function isMcpRemote(config: McpEntry): config is McpRemote {
+type McpRemote = ConfigMCP.Remote
+function isMcpRemote(config: unknown): config is McpRemote {
   return isMcpConfigured(config) && config.type === "remote"
 }
 
 function configuredServers(config: Config.Info) {
-  return Object.entries(config.mcp ?? {}).filter((entry): entry is [string, McpConfigured] => isMcpConfigured(entry[1]))
+  const result: Array<[string, McpConfigured]> = []
+  for (const [name, entry] of Object.entries(config.mcp ?? {})) {
+    if (isMcpConfigured(entry)) result.push([name, entry as McpConfigured])
+  }
+  return result
 }
 
 function oauthServers(config: Config.Info) {
-  return configuredServers(config).filter(
-    (entry): entry is [string, McpRemote] => isMcpRemote(entry[1]) && entry[1].oauth !== false,
-  )
+  const result: Array<[string, McpRemote]> = []
+  for (const [name, entry] of configuredServers(config)) {
+    if (isMcpRemote(entry) && entry.oauth !== false) result.push([name, entry as McpRemote])
+  }
+  return result
 }
 
 function listState() {

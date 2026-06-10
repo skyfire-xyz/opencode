@@ -1,0 +1,10 @@
+{
+  "name": "merchant-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "merchant.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1"
+  }
+}

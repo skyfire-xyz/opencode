@@ -31,6 +31,7 @@ import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
+import { executeWithGateway, buildCapabilityMap, type CapabilityMap } from "./gateway"
 
 const log = Log.create({ service: "mcp" })
 const DEFAULT_TIMEOUT = 30_000
@@ -108,7 +109,7 @@ type PromptInfo = Awaited<ReturnType<MCPClient["listPrompts"]>>["prompts"][numbe
 type ResourceInfo = Awaited<ReturnType<MCPClient["listResources"]>>["resources"][number]
 type McpEntry = NonNullable<Config.Info["mcp"]>[string]
 
-function isMcpConfigured(entry: McpEntry): entry is ConfigMCP.Info {
+function isMcpConfigured(entry: unknown): entry is ConfigMCP.Info {
   return typeof entry === "object" && entry !== null && "type" in entry
 }
 
@@ -155,7 +156,12 @@ function listTools(key: string, client: MCPClient, timeout: number) {
 }
 
 // Convert MCP tool definition to AI SDK Tool type
-function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number): Tool {
+function convertMcpTool(
+  mcpTool: MCPToolDef,
+  client: MCPClient,
+  timeout?: number,
+  gateway?: { clients: Record<string, MCPClient>; capabilityMap: CapabilityMap },
+): Tool {
   const inputSchema = mcpTool.inputSchema
 
   // Spread first, then override type to ensure it's always "object"
@@ -170,6 +176,16 @@ function convertMcpTool(mcpTool: MCPToolDef, client: MCPClient, timeout?: number
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
     execute: async (args: unknown) => {
+      if (gateway) {
+        return executeWithGateway({
+          toolName: mcpTool.name,
+          args: (args || {}) as Record<string, unknown>,
+          client,
+          clients: gateway.clients,
+          capabilityMap: gateway.capabilityMap,
+          timeout,
+        })
+      }
       return client.callTool(
         {
           name: mcpTool.name,
@@ -675,8 +691,16 @@ export const layer = Layer.effect(
       const config = cfg.mcp ?? {}
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
+      const capabilityMap = buildCapabilityMap(config)
+
+      // Servers that declare capabilities are payment-network infrastructure
+      // (token issuers). The gateway reaches them directly via s.clients, so
+      // their tools must NOT be exposed to the agent — otherwise the LLM could
+      // call create-pay-token / find-sellers itself and bypass the gateway.
+      const providerServers = new Set(Object.values(capabilityMap))
+
       const connectedClients = Object.entries(s.clients).filter(
-        ([clientName]) => s.status[clientName]?.status === "connected",
+        ([clientName]) => s.status[clientName]?.status === "connected" && !providerServers.has(clientName),
       )
 
       yield* Effect.forEach(
@@ -693,8 +717,16 @@ export const layer = Layer.effect(
             }
 
             const timeout = entry?.timeout ?? defaultTimeout
+            const hasCapabilities = Object.keys(capabilityMap).length > 0
+            const gateway = hasCapabilities ? { clients: s.clients, capabilityMap } : undefined
+
             for (const mcpTool of listed) {
-              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(mcpTool, client, timeout)
+              result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
+                mcpTool,
+                client,
+                timeout,
+                gateway,
+              )
             }
           }),
         { concurrency: "unbounded" },

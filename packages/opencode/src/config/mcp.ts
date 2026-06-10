@@ -15,6 +15,10 @@ export const Local = Schema.Struct({
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
   }),
+  capabilities: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      'Capability URIs this server can fulfill, e.g. ["org.kyapay:pay", "org.kyapay:kya-pay"]. Used to route payment token requests to the correct issuer.',
+  }),
 }).annotate({ identifier: "McpLocalConfig" })
 export type Local = Schema.Schema.Type<typeof Local>
 
@@ -50,6 +54,10 @@ export const Remote = Schema.Struct({
   }),
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
+  }),
+  capabilities: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      'Capability URIs this server can fulfill, e.g. ["org.kyapay:pay", "org.kyapay:kya-pay"]. Used to route payment token requests to the correct issuer.',
   }),
 }).annotate({ identifier: "McpRemoteConfig" })
 export type Remote = Schema.Schema.Type<typeof Remote>
