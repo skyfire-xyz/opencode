@@ -15,9 +15,9 @@ export const Local = Schema.Struct({
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
   }),
-  capabilities: Schema.optional(Schema.Array(Schema.String)).annotate({
+  capabilities: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ tool: Schema.String }))).annotate({
     description:
-      'Capability URIs this server can fulfill, e.g. ["org.kyapay:pay", "org.kyapay:kya-pay"]. Used to route payment token requests to the correct issuer.',
+      'Capability URIs this server can fulfill, mapped to the tool that mints the token. e.g. { "org.kyapay:pay": { "tool": "create-pay-token" } }',
   }),
 }).annotate({ identifier: "McpLocalConfig" })
 export type Local = Schema.Schema.Type<typeof Local>
@@ -55,9 +55,9 @@ export const Remote = Schema.Struct({
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
   }),
-  capabilities: Schema.optional(Schema.Array(Schema.String)).annotate({
+  capabilities: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ tool: Schema.String }))).annotate({
     description:
-      'Capability URIs this server can fulfill, e.g. ["org.kyapay:pay", "org.kyapay:kya-pay"]. Used to route payment token requests to the correct issuer.',
+      'Capability URIs this server can fulfill, mapped to the tool that mints the token. e.g. { "org.kyapay:pay": { "tool": "create-pay-token" } }',
   }),
 }).annotate({ identifier: "McpRemoteConfig" })
 export type Remote = Schema.Schema.Type<typeof Remote>

@@ -7,7 +7,7 @@
   //
   // Flow:
   //   1. LLM calls merchant's submit_order with just a product_id
-  //   2. Merchant rejects with { isError: true, _meta: { requires: "com.skyfire/pay_token", amount, sellerServiceId } }
+  //   2. Merchant rejects with { isError: true, _meta: { requires: "org.kyapay:pay", amount, sellerServiceId } }
   //   3. Gateway intercepts, autonomously calls Skyfire's create-pay-token
   //   4. Gateway retries submit_order with the token injected in _meta
   //   5. LLM receives only the final success — never sees the token
@@ -18,8 +18,10 @@
       "headers": {
         "skyfire-api-key": "",
       },
-      // Declares that this server can provide payment tokens
-      "capabilities": ["org.kyapay:kya", "org.kyapay:kya-pay:card", "org.kyapay:pay:card"],
+      // Declares that this server can provide payment tokens, mapped to the tool that mints them.
+      "capabilities": {
+        "org.kyapay:pay": { "tool": "create-pay-token" },
+      },
     },
     "merchant": {
       "type": "local",

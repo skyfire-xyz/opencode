@@ -81,22 +81,6 @@ function parseMandateSignal(result: CallToolResult): MandateSignal | undefined {
 }
 
 // ---------------------------------------------------------------------------
-// Settlement type → issuer tool mapping
-// ---------------------------------------------------------------------------
-
-/**
- * Map a settlement type to the MCP tool name on the token issuer.
- *
- * "org.kyapay:kya-pay:card" → "create-kya-payment-token"  (combined KYA + PAY)
- * "org.kyapay:pay:card"     → "create-pay-token"           (PAY only)
- */
-function resolveIssuerTool(settlementType: string): string {
-  if (settlementType.startsWith("org.kyapay:kya-pay")) return "create-kya-payment-token"
-  if (settlementType.startsWith("org.kyapay:pay")) return "create-pay-token"
-  return settlementType.split(":").pop() ?? settlementType
-}
-
-// ---------------------------------------------------------------------------
 // Seller identity resolution
 // ---------------------------------------------------------------------------
 
@@ -224,9 +208,16 @@ function setCachedToken(settlementType: string, total: number, currency: string,
 // Capability map (config → server routing)
 // ---------------------------------------------------------------------------
 
+export interface CapabilityEntry {
+  /** The MCP server name that handles this capability. */
+  server: string
+  /** The tool on that server to call when minting a token. */
+  tool: string
+}
+
 export interface CapabilityMap {
-  /** Maps a settlement type prefix (e.g. "org.kyapay") to a server name */
-  [capability: string]: string
+  /** Maps a settlement type prefix (e.g. "org.kyapay:pay") to its provider entry. */
+  [capability: string]: CapabilityEntry
 }
 
 export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { enabled: boolean }>): CapabilityMap {
@@ -235,22 +226,21 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     if (!("type" in entry)) continue
     const info = entry as ConfigMCP.Info
     if (!("capabilities" in info) || !info.capabilities) continue
-    for (const cap of info.capabilities) {
-      map[cap] = serverName
+    for (const [cap, capConfig] of Object.entries(info.capabilities)) {
+      map[cap] = { server: serverName, tool: capConfig.tool }
     }
   }
   return map
 }
 
 /**
- * Find the provider server for a given settlement type.
+ * Find the provider entry for a given settlement type.
  *
- * Settlement types look like "org.kyapay:kya-pay:card". Capabilities in config
- * are prefixes like "org.kyapay:kya-pay" or "org.kyapay". We match the most
+ * Settlement types look like "org.kyapay:pay:card". Capabilities in config
+ * are prefixes like "org.kyapay:pay" or "org.kyapay". We match the most
  * specific prefix first.
  */
-function findProviderForSettlement(settlementType: string, capabilityMap: CapabilityMap): string | undefined {
-  // Try exact match first, then progressively shorter prefixes using ':'
+function findProviderForSettlement(settlementType: string, capabilityMap: CapabilityMap): CapabilityEntry | undefined {
   const parts = settlementType.split(":")
   for (let i = parts.length; i > 0; i--) {
     const prefix = parts.slice(0, i).join(":")
@@ -293,17 +283,17 @@ export async function executeWithGateway(input: {
 
   // Find a settlement type we can fulfill
   let matchedType: string | undefined
-  let providerServerName: string | undefined
+  let provider: CapabilityEntry | undefined
 
   for (const st of payment.settlementTypes) {
-    providerServerName = findProviderForSettlement(st, capabilityMap)
-    if (providerServerName) {
+    provider = findProviderForSettlement(st, capabilityMap)
+    if (provider) {
       matchedType = st
       break
     }
   }
 
-  if (!matchedType || !providerServerName) {
+  if (!matchedType || !provider) {
     log.error("gateway: no provider for any settlement type", {
       requested: payment.settlementTypes,
       available: Object.keys(capabilityMap),
@@ -311,22 +301,23 @@ export async function executeWithGateway(input: {
     return result
   }
 
-  const providerClient = clients[providerServerName]
+  const providerClient = clients[provider.server]
   if (!providerClient) {
-    log.error("gateway: provider server not connected", { server: providerServerName })
+    log.error("gateway: provider server not connected", { server: provider.server })
     return result
   }
 
   log.info("gateway: matched settlement type", {
     settlementType: matchedType,
-    provider: providerServerName,
+    provider: provider.server,
+    tool: provider.tool,
   })
 
   // Check cache first
   let token = getCachedToken(matchedType, payment.total, payment.currency)
 
   if (!token) {
-    const issuerTool = resolveIssuerTool(matchedType)
+    const issuerTool = provider.tool
 
     // Build the _meta to forward payment details to the token issuer
     const issuerMeta: Record<string, unknown> = {
@@ -340,7 +331,7 @@ export async function executeWithGateway(input: {
 
     const sellerServiceId = await resolveSellerServiceId({ payment, providerClient, timeout })
     if (!sellerServiceId) {
-      log.error("gateway: could not resolve seller service id for issuer", { server: providerServerName })
+      log.error("gateway: could not resolve seller service id for issuer", { server: provider.server })
       return {
         content: [
           {
@@ -353,7 +344,7 @@ export async function executeWithGateway(input: {
     }
 
     log.info("gateway: calling token issuer", {
-      server: providerServerName,
+      server: provider.server,
       tool: issuerTool,
       total: payment.total,
       currency: payment.currency,
@@ -391,7 +382,7 @@ export async function executeWithGateway(input: {
 
     if (tokenResult.isError) {
       log.error("gateway: token issuer returned error", {
-        server: providerServerName,
+        server: provider.server,
         tool: issuerTool,
         detail: resultText(tokenResult),
       })
@@ -404,7 +395,7 @@ export async function executeWithGateway(input: {
       // content text with isError unset, so surface that text rather than a
       // generic "failed to extract" message.
       const detail = resultText(tokenResult)
-      log.error("gateway: could not extract token from issuer response", { server: providerServerName, detail })
+      log.error("gateway: could not extract token from issuer response", { server: provider.server, detail })
       return {
         content: [
           {
@@ -419,7 +410,7 @@ export async function executeWithGateway(input: {
     }
 
     setCachedToken(matchedType, payment.total, payment.currency, token)
-    log.info("gateway: acquired and cached token", { server: providerServerName })
+    log.info("gateway: acquired and cached token", { server: provider.server })
   } else {
     log.info("gateway: using cached token", { settlementType: matchedType })
   }

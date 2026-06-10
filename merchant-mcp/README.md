@@ -21,14 +21,16 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
   "type": "remote",
   "url": "http://localhost:4000/mcp",
   "headers": { "skyfire-api-key": "<key>" },
-  // Settlement-type URIs this server can fulfill.
-  "capabilities": ["org.kyapay:kya", "org.kyapay:kya-pay:card", "org.kyapay:pay:card"]
+  // Settlement-type URIs this server can fulfill, mapped to the tool that mints the token.
+  "capabilities": {
+    "org.kyapay:pay": { "tool": "create-pay-token" }
+  }
 }
 ```
 
 - The field is defined on both `Local` and `Remote` configs in
   [`packages/opencode/src/config/mcp.ts`](../packages/opencode/src/config/mcp.ts).
-- `buildCapabilityMap` folds all servers into a `{ capability → serverName }` map,
+- `buildCapabilityMap` folds all servers into a `{ capability → { server, tool } }` map,
   and `findProviderForSettlement` does **longest-prefix matching** on the `:`-delimited
   URI (so `org.kyapay:kya-pay:card` matches before falling back to `org.kyapay`). Both
   live in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts).
@@ -149,7 +151,9 @@ as a `looseObject`, so custom keys survive validation) and surfaces on the serve
       "type": "remote",
       "url": "http://localhost:4000/mcp",
       "headers": { "skyfire-api-key": "<your-key>" },
-      "capabilities": ["org.kyapay:kya", "org.kyapay:kya-pay:card", "org.kyapay:pay:card"],
+      "capabilities": {
+        "org.kyapay:pay": { "tool": "create-pay-token" },
+      },
     },
     "merchant": {
       "type": "local",
