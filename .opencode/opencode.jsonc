@@ -23,7 +23,7 @@
         },
       },
       "headers": {
-        "skyfire-api-key": "",
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
       },
     },
   },
