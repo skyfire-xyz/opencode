@@ -382,6 +382,19 @@ In the mock logs you'll see the interactive markers:
 > browser on the same machine as the OpenCode server, or set a custom
 > `oauth.redirectUri` on the MCP server config.
 
+
+## Testing Regular Oauth Flow
+
+Add an oauth mcp server like context7 to opencode.jsonc
+
+"context7": {
+  "type": "remote",
+  "enabled": true,
+  "url": "https://mcp.context7.com/mcp/oauth",
+},
+
+Toggle on to confirm oauth is working
+
 ---
 
 ## How to verify the token mint + MCP auth works
