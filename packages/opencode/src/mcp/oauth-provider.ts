@@ -125,7 +125,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     if (entry?.clientInfo) {
       // Check if client secret has expired
       if (entry.clientInfo.clientSecretExpiresAt && entry.clientInfo.clientSecretExpiresAt < Date.now() / 1000) {
-        log.info("client secret expired, need to re-register", { mcpName: this.mcpName })
+        log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
         return undefined
       }
       return {
@@ -151,7 +151,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
         this.serverUrl,
       ),
     )
-    log.info("saved dynamically registered client", {
+    log.info("[saveClientInformation] saved dynamically registered client", {
       mcpName: this.mcpName,
       clientId: info.client_id,
     })
@@ -186,11 +186,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
         this.serverUrl,
       ),
     )
-    log.info("saved oauth tokens", { mcpName: this.mcpName })
+    log.info("[saveTokens] saved oauth tokens", { mcpName: this.mcpName })
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    log.info("redirecting to authorization", { mcpName: this.mcpName, url: authorizationUrl.toString() })
+    log.info("[redirectToAuthorization] redirecting to authorization", {
+      mcpName: this.mcpName,
+      url: authorizationUrl.toString(),
+    })
     await this.callbacks.onRedirect(authorizationUrl)
   }
 
@@ -228,7 +231,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async invalidateCredentials(type: "all" | "client" | "tokens"): Promise<void> {
-    log.info("invalidating credentials", { mcpName: this.mcpName, type })
+    log.info("[invalidateCredentials] invalidating credentials", { mcpName: this.mcpName, type })
     const entry = await Effect.runPromise(this.auth.get(this.mcpName))
     if (!entry) {
       return
@@ -266,7 +269,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
    */
   async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
     const profiles = authorizationGrantProfilesSupported(metadata)
-    log.info("getTokensForMetadata: deferring KYA to out-of-band trySilentKya", {
+    log.info("[getTokensForMetadata] deferring KYA to out-of-band trySilentKya", {
       mcpName: this.mcpName,
       profiles: profiles.slice(0, 8),
     })

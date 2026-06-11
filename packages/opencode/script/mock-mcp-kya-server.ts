@@ -136,7 +136,7 @@ async function verifyKyaAssertion(assertion: string) {
 
   const payload = result.payload as unknown as Record<string, unknown>
   // eslint-disable-next-line no-console
-  console.log("verifyKyaAssertion: verified", {
+  console.log("[verifyKyaAssertion] verified", {
     iss: payload.iss,
     aud: payload.aud,
     sub: typeof payload.sub === "string" ? payload.sub : undefined,
@@ -171,7 +171,7 @@ const authServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", authOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("authServer: request", { method: req.method, path: url.pathname })
+  console.log("[authServer] request", { method: req.method, path: url.pathname })
 
   // --- OAuth / OIDC discovery (Resource Authorization Server metadata) ---
   if (
@@ -217,7 +217,7 @@ const authServer = http.createServer((req, res) => {
     if (state) location.searchParams.set("state", state)
 
     // eslint-disable-next-line no-console
-    console.log("authServer: authorize -> redirect", {
+    console.log("[authServer] authorize -> redirect", {
       redirectTo: `${location.origin}${location.pathname}`,
       codePrefix: prefix(code, 8),
     })
@@ -242,7 +242,7 @@ const authServer = http.createServer((req, res) => {
       clientSeq += 1
       const clientId = `mock_client_${clientSeq}`
       // eslint-disable-next-line no-console
-      console.log("authServer: register", { clientId })
+      console.log("[authServer] register", { clientId })
       return json(res, 201, {
         client_id: clientId,
         client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -319,7 +319,7 @@ const authServer = http.createServer((req, res) => {
         })
 
         // eslint-disable-next-line no-console
-        console.log("authServer: token issued (authorization_code)", {
+        console.log("[authServer] token issued (authorization_code)", {
           accessTokenPrefix: prefix(access, 20),
           scope,
           user,
@@ -336,7 +336,7 @@ const authServer = http.createServer((req, res) => {
       // eslint-disable-next-line no-console
       console.log("===== OAuth token exchange BEGIN (jwt-bearer) =====", { grantType, hasAssertion: !!assertion })
       // eslint-disable-next-line no-console
-      console.log("authServer: token(jwt-bearer) request", {
+      console.log("[authServer] token(jwt-bearer) request", {
         grantType,
         hasAssertion: !!assertion,
         assertionPrefix: assertion ? prefix(assertion, 18) : undefined,
@@ -410,7 +410,7 @@ const authServer = http.createServer((req, res) => {
           })
 
           // eslint-disable-next-line no-console
-          console.log("authServer: token issued", {
+          console.log("[authServer] token issued", {
             grantType,
             accessTokenPrefix: prefix(access, 20),
             scope,
@@ -490,7 +490,7 @@ const mcpServer = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", mcpOrigin)
 
   // eslint-disable-next-line no-console
-  console.log("mcpServer: request", {
+  console.log("[mcpServer] request", {
     method: req.method,
     path: url.pathname,
     authorizationPrefix: prefix(header(req, "authorization") ?? "", 24) || undefined,
@@ -502,7 +502,7 @@ const mcpServer = http.createServer((req, res) => {
   // as the authorization server (and will try POST /register on 8787).
   if (req.method === "GET" && url.pathname === "/.well-known/oauth-protected-resource") {
     // eslint-disable-next-line no-console
-    console.log("mcpServer: oauth-protected-resource", {
+    console.log("[mcpServer] oauth-protected-resource", {
       resource: mcpOrigin,
       authorization_servers: [authOrigin],
     })
@@ -522,7 +522,7 @@ const mcpServer = http.createServer((req, res) => {
     const now = Math.floor(Date.now() / 1000)
 
     // eslint-disable-next-line no-console
-    console.log("mcpServer: verifyJwt", {
+    console.log("[mcpServer] verifyJwt", {
       hasToken: !!token,
       tokenPrefix: token ? prefix(token, 18) : undefined,
     })
@@ -530,7 +530,7 @@ const mcpServer = http.createServer((req, res) => {
     const tokenPayload = token ? verifyJwt(token, mockSigningSecret) : undefined
 
     // eslint-disable-next-line no-console
-    console.log("mcpServer: verifyJwt result", {
+    console.log("[mcpServer] verifyJwt result", {
       verified: !!tokenPayload,
       iss: typeof tokenPayload?.iss === "string" ? tokenPayload.iss : undefined,
       aud: typeof tokenPayload?.aud === "string" ? tokenPayload.aud : undefined,
@@ -578,7 +578,7 @@ const mcpServer = http.createServer((req, res) => {
       // eslint-disable-next-line no-console
       console.log("===== MCP auth flow BEGIN (401 challenge sent) =====", { reason })
       // eslint-disable-next-line no-console
-      console.log("mcpServer: unauthorized", {
+      console.log("[mcpServer] unauthorized", {
         hasAuthHeader: !!auth,
         tokenPrefix: token ? prefix(token, 18) : undefined,
         issuedTokenCount: issuedTokens.size,
@@ -593,7 +593,7 @@ const mcpServer = http.createServer((req, res) => {
     }
 
     // eslint-disable-next-line no-console
-    console.log("mcpServer: authorized", {
+    console.log("[mcpServer] authorized", {
       iss: tokenIss,
       aud: tokenAud,
       sub: tokenSub ? prefix(tokenSub, 24) : undefined,
@@ -619,7 +619,7 @@ const mcpServer = http.createServer((req, res) => {
       const method = parsed?.method
 
       // eslint-disable-next-line no-console
-      console.log("mcpServer: jsonrpc", {
+      console.log("[mcpServer] jsonrpc", {
         id,
         method,
         tool: typeof parsed?.params?.name === "string" ? parsed.params.name : undefined,
@@ -627,7 +627,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "initialize") {
         // eslint-disable-next-line no-console
-        console.log("mcpServer: initialize")
+        console.log("[mcpServer] initialize")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -641,7 +641,7 @@ const mcpServer = http.createServer((req, res) => {
 
       if (method === "tools/list") {
         // eslint-disable-next-line no-console
-        console.log("mcpServer: tools/list")
+        console.log("[mcpServer] tools/list")
         return json(res, 200, {
           jsonrpc: "2.0",
           id,
@@ -682,7 +682,7 @@ const mcpServer = http.createServer((req, res) => {
         const args = parsed?.params?.arguments ?? {}
 
         // eslint-disable-next-line no-console
-        console.log("mcpServer: tools/call", { name })
+        console.log("[mcpServer] tools/call", { name })
 
         if (name === "echo") {
           const textValue = typeof args.text === "string" ? args.text : ""
