@@ -156,6 +156,9 @@ export const McpListCommand = effectCmd({
         statusIcon = "✗"
         statusText = "needs client registration"
         hint = "\n    " + status.error
+      } else if (status.status === "not_connected") {
+        statusIcon = "○"
+        statusText = "not connected"
       } else {
         statusIcon = "✗"
         statusText = "failed"

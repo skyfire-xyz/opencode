@@ -32,8 +32,17 @@ import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { executeWithGateway, buildCapabilityMap, type CapabilityMap } from "./gateway"
+import {
+  type KyaIssuer,
+  hasKyaCapability,
+  kyaIssuerFromConfig,
+  extractJwtFromText,
+  probeResourceMetadataUrl,
+} from "./kya"
+import { Flag } from "@opencode-ai/core/flag/flag"
 
 const log = Log.create({ service: "mcp" })
+const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
 const DEFAULT_TIMEOUT = 30_000
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
@@ -90,6 +99,9 @@ const StatusNeedsClientRegistration = Schema.Struct({
   status: Schema.Literal("needs_client_registration"),
   error: Schema.String,
 }).annotate({ identifier: "MCPStatusNeedsClientRegistration" })
+const StatusNotConnected = Schema.Struct({ status: Schema.Literal("not_connected") }).annotate({
+  identifier: "MCPStatusNotConnected",
+})
 
 export const Status = Schema.Union([
   StatusConnected,
@@ -97,6 +109,7 @@ export const Status = Schema.Union([
   StatusFailed,
   StatusNeedsAuth,
   StatusNeedsClientRegistration,
+  StatusNotConnected,
 ]).annotate({ identifier: "MCPStatus", discriminator: "status" })
 export type Status = Schema.Schema.Type<typeof Status>
 
@@ -123,6 +136,288 @@ function remoteURL(key: string, value: string) {
 function isOutputSchemaValidationError(error: Error) {
   return /can't resolve reference|resolves to more than one schema|outputSchema|schema.*reference|reference.*schema/i.test(
     error.message,
+  )
+}
+
+function authorizationGrantProfilesSupported(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object") return []
+  const obj = metadata as Record<string, unknown>
+  const arr = obj["authorization_grant_profiles_supported"]
+  if (!Array.isArray(arr)) return []
+  return arr
+    .filter((v): v is string => typeof v === "string")
+    .flatMap((value) => {
+      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
+      return [value]
+    })
+}
+
+/**
+ * Localhost/loopback targets don't exist in the Skyfire seller directory, so
+ * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so QA mints a valid KYA token against a known seller.
+ */
+function kyaSellerDomainOrUrl(targetUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(targetUrl).hostname.toLowerCase()
+    } catch {
+      return ""
+    }
+  })()
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  return isLocal || !host ? LOCAL_TARGET_PLACEHOLDER_DOMAIN : host
+}
+
+type KyaSupport = { supportsKya: boolean; authServer: string | undefined; sellerServiceId?: string | undefined }
+type KyaMintResult =
+  | { minted: true; kyaAdvertised: true }
+  | { minted: false; kyaAdvertised: false }
+  | { minted: false; kyaAdvertised: true; error: string }
+
+function trySilentKya(args: {
+  name: string
+  serverUrl: string
+  auth: McpAuth.Interface
+  issuer: KyaIssuer | undefined
+  /**
+   * Optional override. When set, OpenCode passes this as `sellerServiceId` to
+   * the configured Skyfire KYA tool. When unset, the seller is derived
+   * from the target MCP URL and sent as `sellerDomainOrUrl` instead.
+   */
+  sellerServiceId?: string | undefined
+}) {
+  return Effect.gen(function* () {
+    log.info("===== KYA auth flow BEGIN =====", {
+      name: args.name,
+      url: args.serverUrl,
+      hasSkyfire: !!args.issuer,
+    })
+
+    const kyaSupport = yield* Effect.tryPromise({
+      try: async (): Promise<KyaSupport> => {
+        // B1–B2: probe the MCP endpoint and read the RFC 9728 resource_metadata
+        // pointer from the 401, falling back to the default well-known location.
+        const resourceOrigin = new URL(args.serverUrl).origin
+        const resourceMetadataUrl =
+          (await probeResourceMetadataUrl(args.serverUrl)) ??
+          new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
+        log.info("kya connect preflight: fetching protected resource metadata", {
+          name: args.name,
+          resourceMetadataUrl,
+        })
+        const protectedRes = await fetch(resourceMetadataUrl, {
+          headers: { accept: "application/json" },
+        })
+        if (!protectedRes.ok) return { supportsKya: false, authServer: undefined }
+
+        const protectedJson = (await protectedRes.json()) as any
+        // A protected resource may advertise its own Skyfire seller identity so
+        // the KYA token is minted for the right seller without an env override.
+        const sellerServiceId =
+          typeof protectedJson?.seller_service_id === "string" ? (protectedJson.seller_service_id as string) : undefined
+        const authServers =
+          Array.isArray(protectedJson?.authorization_servers) &&
+          protectedJson.authorization_servers.every((x: any) => typeof x === "string")
+            ? (protectedJson.authorization_servers as string[])
+            : []
+        const authServer = authServers[0]
+        if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
+
+        log.info("kya connect preflight: fetching AS metadata", { name: args.name, authServer })
+        const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+          headers: { accept: "application/json" },
+        })
+        const asJson = rfc8414.ok
+          ? await rfc8414.json()
+          : await fetch(new URL("/.well-known/openid-configuration", authServer), {
+              headers: { accept: "application/json" },
+            }).then((r) => (r.ok ? r.json() : undefined))
+
+        const profiles = authorizationGrantProfilesSupported(asJson)
+        log.info("kya connect preflight: AS grant profiles", {
+          name: args.name,
+          authServer,
+          supportsKya: profiles.includes("kya"),
+          profiles: profiles.slice(0, 10),
+        })
+        return { supportsKya: profiles.includes("kya"), authServer, sellerServiceId }
+      },
+      catch: () => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport,
+    })
+
+    if (!kyaSupport.supportsKya) {
+      log.info("kya connect preflight: KYA not advertised", { name: args.name })
+      return { minted: false, kyaAdvertised: false } satisfies KyaMintResult
+    }
+
+    // Seller selector priority: explicit env override > seller advertised by the
+    // protected resource > placeholder domain derived from the target URL.
+    const resolvedSellerServiceId = args.sellerServiceId ?? kyaSupport.sellerServiceId
+    const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = resolvedSellerServiceId
+      ? { sellerServiceId: resolvedSellerServiceId }
+      : { sellerDomainOrUrl: kyaSellerDomainOrUrl(args.serverUrl) }
+    log.info("kya connect preflight: resolved seller selector", {
+      name: args.name,
+      sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
+      sellerValue: "sellerServiceId" in sellerArg ? sellerArg.sellerServiceId : sellerArg.sellerDomainOrUrl,
+    })
+
+    if (!args.issuer) {
+      return {
+        minted: false,
+        kyaAdvertised: true,
+        error:
+          'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+      } satisfies KyaMintResult
+    }
+    const issuer = args.issuer
+
+    log.info("kya connect preflight: connecting to skyfire issuer", {
+      name: args.name,
+      issuer: issuer.name,
+      issuerUrl: issuer.config.url,
+      issuerTool: issuer.tool,
+      hasHeaders: !!issuer.config.headers && Object.keys(issuer.config.headers).length > 0,
+    })
+
+    const issuerTransport = new StreamableHTTPClientTransport(new URL(issuer.config.url), {
+      requestInit: { headers: issuer.config.headers ?? {} },
+    })
+
+    const issuerClient = new Client({ name: "opencode", version: InstallationVersion })
+    yield* Effect.tryPromise({
+      try: () => issuerClient.connect(issuerTransport),
+      catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+    })
+
+    log.info("MCP.connect KYA: calling issuer KYA tool", {
+      name: args.name,
+      issuer: issuer.name,
+      issuerUrl: issuer.config.url,
+      issuerTool: issuer.tool,
+      sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
+    })
+
+    const toolResult = yield* Effect.tryPromise({
+      try: () => issuerClient.callTool({ name: issuer.tool, arguments: sellerArg }),
+      catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+    }).pipe(Effect.ensuring(Effect.tryPromise(() => issuerClient.close()).pipe(Effect.ignore)))
+
+    const text = Array.isArray((toolResult as any).content)
+      ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
+      : String((toolResult as any).content ?? "")
+
+    log.info("kya connect preflight: skyfire tool response", {
+      name: args.name,
+      textPrefix: text.slice(0, 200),
+      length: text.length,
+    })
+
+    const assertion = extractJwtFromText(text)
+    if (!assertion) {
+      return {
+        minted: false,
+        kyaAdvertised: true,
+        error: "Could not extract JWT assertion from skyfire tool output",
+      } satisfies KyaMintResult
+    }
+
+    log.info("kya connect preflight: extracted assertion", {
+      name: args.name,
+      assertionPrefix: assertion.slice(0, 16),
+      assertionLength: assertion.length,
+    })
+
+    const oauthMetadata = yield* Effect.tryPromise({
+      try: async () => {
+        const authServer = kyaSupport.authServer
+        if (!authServer) return undefined
+        const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+          headers: { accept: "application/json" },
+        })
+        return rfc8414.ok ? ((await rfc8414.json()) as any) : undefined
+      },
+      catch: () => undefined,
+    })
+
+    const tokenEndpoint =
+      oauthMetadata && typeof oauthMetadata === "object" && typeof (oauthMetadata as any).token_endpoint === "string"
+        ? ((oauthMetadata as any).token_endpoint as string)
+        : undefined
+    if (!tokenEndpoint) {
+      return {
+        minted: false,
+        kyaAdvertised: true,
+        error: "Auth server metadata missing token_endpoint",
+      } satisfies KyaMintResult
+    }
+
+    log.info("kya connect preflight: exchanging assertion for access token", { name: args.name, tokenEndpoint })
+
+    const form = new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion,
+    })
+
+    const tokenJson = yield* Effect.tryPromise({
+      try: async () => {
+        const res = await fetch(tokenEndpoint, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: form,
+        })
+        if (!res.ok) throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
+        return (await res.json()) as any
+      },
+      catch: (e) => (e instanceof Error ? e : new Error(String(e))),
+    })
+
+    const accessToken = tokenJson && typeof tokenJson.access_token === "string" ? tokenJson.access_token : undefined
+    if (!accessToken) {
+      return {
+        minted: false,
+        kyaAdvertised: true,
+        error: "Token exchange response missing access_token",
+      } satisfies KyaMintResult
+    }
+
+    log.info("kya connect preflight: token exchange success", {
+      name: args.name,
+      accessTokenPrefix: accessToken.slice(0, 12),
+      accessTokenLength: accessToken.length,
+    })
+
+    yield* args.auth.updateTokens(
+      args.name,
+      { accessToken, refreshToken: undefined, expiresAt: undefined, scope: undefined },
+      new URL(args.serverUrl).origin,
+    )
+
+    log.info("kya connect preflight: stored access token", {
+      name: args.name,
+      tokenKey: new URL(args.serverUrl).origin,
+    })
+
+    return { minted: true, kyaAdvertised: true } satisfies KyaMintResult
+  }).pipe(
+    Effect.catch((_e) =>
+      Effect.succeed({
+        minted: false,
+        kyaAdvertised: false,
+      } satisfies KyaMintResult),
+    ),
+    Effect.tap((result) => Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result }))),
   )
 }
 
@@ -372,60 +667,132 @@ export const layer = Layer.effect(
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
       let lastStatus: Status | undefined
+      let kyaRetried = false
+      // A server that answered the StreamableHTTP attempt with a 401 clearly
+      // speaks HTTP and just needs auth — never fall back to SSE (which would
+      // 404 on such servers and mask the real auth/KYA failure).
+      let stopTransportFallback = false
+
+      // A transport can't be reused after a failed connect, so build a fresh
+      // StreamableHTTP transport for the post-KYA retry. The authProvider's
+      // tokens() will now return the access token stored by trySilentKya.
+      const freshStreamable = () =>
+        new StreamableHTTPClientTransport(url, {
+          authProvider,
+          requestInit: mcp.headers ? { headers: mcp.headers } : undefined,
+        })
 
       for (const { name, transport } of transports) {
         const result = yield* connectTransport(transport, connectTimeout).pipe(
           Effect.map((client) => ({ client, transportName: name })),
-          Effect.catch((error) => {
-            const lastError = error instanceof Error ? error : new Error(String(error))
-            const isAuthError =
-              error instanceof UnauthorizedError || (authProvider && lastError.message.includes("OAuth"))
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              const lastError = error instanceof Error ? error : new Error(String(error))
+              const isAuthError =
+                error instanceof UnauthorizedError || (authProvider && lastError.message.includes("OAuth"))
 
-            if (isAuthError) {
-              log.info("mcp server requires authentication", { key, transport: name })
+              if (isAuthError) {
+                log.info("mcp server requires authentication", { key, transport: name })
+                stopTransportFallback = true
 
-              if (lastError.message.includes("registration") || lastError.message.includes("client_id")) {
-                lastStatus = {
-                  status: "needs_client_registration" as const,
-                  error: "Server does not support dynamic client registration. Please provide clientId in config.",
+                if (lastError.message.includes("registration") || lastError.message.includes("client_id")) {
+                  lastStatus = {
+                    status: "needs_client_registration" as const,
+                    error: "Server does not support dynamic client registration. Please provide clientId in config.",
+                  }
+                  yield* bus
+                    .publish(TuiEvent.ToastShow, {
+                      title: "MCP Authentication Required",
+                      message: `Server "${key}" requires a pre-registered client ID. Add clientId to your config.`,
+                      variant: "warning",
+                      duration: 8000,
+                    })
+                    .pipe(Effect.ignore)
+                  return undefined
                 }
-                return bus
-                  .publish(TuiEvent.ToastShow, {
-                    title: "MCP Authentication Required",
-                    message: `Server "${key}" requires a pre-registered client ID. Add clientId to your config.`,
-                    variant: "warning",
-                    duration: 8000,
+
+                // Silent KYA: an auth-required server may advertise the KYA grant
+                // profile. The issuer authenticates via its own headers, so never
+                // try to mint a KYA token for the issuer itself.
+                if (name === "StreamableHTTP" && !kyaRetried && !hasKyaCapability(mcp)) {
+                  const cfg = yield* cfgSvc.get()
+                  const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+
+                  if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+                    // Default demo behavior: no issuer means we can't mint, and KYA is
+                    // the only sanctioned path, so stop here. Set
+                    // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
+                    lastStatus = {
+                      status: "failed" as const,
+                      error:
+                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+                    }
+                    return undefined
+                  }
+
+                  const minted = yield* trySilentKya({
+                    name: key,
+                    serverUrl: mcp.url,
+                    auth,
+                    issuer,
+                    sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
                   })
-                  .pipe(Effect.ignore, Effect.as(undefined))
-              } else {
+
+                  if (minted.minted) {
+                    // Token stored — retry StreamableHTTP once with a fresh transport.
+                    kyaRetried = true
+                    log.info("kya mint: stored token, retrying StreamableHTTP connect", { key })
+                    return yield* connectTransport(freshStreamable(), connectTimeout).pipe(
+                      Effect.map((client) => ({ client, transportName: name })),
+                      Effect.catch((retryError) => {
+                        const e = retryError instanceof Error ? retryError : new Error(String(retryError))
+                        lastStatus = { status: "failed" as const, error: e.message }
+                        return Effect.succeed(undefined)
+                      }),
+                    )
+                  }
+
+                  if (minted.kyaAdvertised) {
+                    // KYA is advertised but minting failed — surface a clear failure
+                    // rather than silently falling back to interactive OAuth.
+                    lastStatus = {
+                      status: "failed" as const,
+                      error: "error" in minted ? minted.error : "Silent KYA token minting failed",
+                    }
+                    return undefined
+                  }
+                }
+
                 pendingOAuthTransports.set(key, transport)
                 lastStatus = { status: "needs_auth" as const }
-                return bus
+                yield* bus
                   .publish(TuiEvent.ToastShow, {
                     title: "MCP Authentication Required",
                     message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
                     variant: "warning",
                     duration: 8000,
                   })
-                  .pipe(Effect.ignore, Effect.as(undefined))
+                  .pipe(Effect.ignore)
+                return undefined
               }
-            }
 
-            log.debug("transport connection failed", {
-              key,
-              transport: name,
-              url: mcp.url,
-              error: lastError.message,
-            })
-            lastStatus = { status: "failed" as const, error: lastError.message }
-            return Effect.succeed(undefined)
-          }),
+              log.debug("transport connection failed", {
+                key,
+                transport: name,
+                url: mcp.url,
+                error: lastError.message,
+              })
+              lastStatus = { status: "failed" as const, error: lastError.message }
+              return undefined
+            }),
+          ),
         )
         if (result) {
           log.info("connected", { key, transport: result.transportName })
           return { client: result.client as MCPClient | undefined, status: { status: "connected" } as Status }
         }
         // If this was an auth error, stop trying other transports
+        if (stopTransportFallback) break
         if (lastStatus?.status === "needs_auth" || lastStatus?.status === "needs_client_registration") break
       }
 
@@ -538,9 +905,6 @@ export const layer = Layer.effect(
 
     const state = yield* InstanceState.make<State>(
       Effect.fn("MCP.state")(function* () {
-        const cfg = yield* cfgSvc.get()
-        const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
         const s: State = {
           config: {},
           status: {},
@@ -548,32 +912,9 @@ export const layer = Layer.effect(
           defs: {},
         }
 
-        yield* Effect.forEach(
-          Object.entries(config),
-          ([key, mcp]) =>
-            Effect.gen(function* () {
-              if (!isMcpConfigured(mcp)) {
-                log.error("Ignoring MCP config entry without type", { key })
-                return
-              }
-
-              if (mcp.enabled === false) {
-                s.status[key] = { status: "disabled" }
-                return
-              }
-
-              const result = yield* create(key, mcp).pipe(Effect.catch(() => Effect.void))
-              if (!result) return
-
-              s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
-              }
-            }),
-          { concurrency: "unbounded" },
-        )
+        // We intentionally don't eagerly connect MCP servers here. Connections
+        // (and any KYA auth they trigger) happen on-demand via MCP.connect when
+        // the user enables a server in the UI — matching SKYK-1791's behavior.
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -634,7 +975,11 @@ export const layer = Layer.effect(
 
       for (const [key, mcp] of Object.entries(config)) {
         if (!isMcpConfigured(mcp)) continue
-        result[key] = s.status[key] ?? { status: "disabled" }
+        if (mcp.enabled === false) {
+          result[key] = { status: "disabled" }
+          continue
+        }
+        result[key] = s.status[key] ?? { status: "not_connected" }
       }
 
       for (const key of Object.keys(s.config)) {
@@ -672,6 +1017,43 @@ export const layer = Layer.effect(
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
       const mcp = yield* requireMcpConfig(name)
+
+      // The KYA issuer itself authenticates via its configured headers (e.g.
+      // skyfire-api-key), not via the KYA preflight — skip the probe/mint for it.
+      if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
+        const cfg = yield* cfgSvc.get()
+        const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+
+        const minted = yield* trySilentKya({
+          name,
+          serverUrl: mcp.url,
+          auth,
+          issuer,
+          sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
+        })
+
+        if (minted.kyaAdvertised && !minted.minted) {
+          const s = yield* InstanceState.get(state)
+          const message =
+            "error" in minted && typeof minted.error === "string"
+              ? minted.error
+              : "KYA is advertised by the server but silent token minting failed"
+
+          // KYA is advertised, so interactive OAuth is not the desired path in this demo.
+          // Surface a clear failure and stop here.
+          s.status[name] = { status: "failed" as const, error: message }
+          yield* bus
+            .publish(TuiEvent.ToastShow, {
+              title: "MCP Authentication",
+              message: `Silent KYA auth failed for "${name}": ${message}`,
+              variant: "warning",
+              duration: 10_000,
+            })
+            .pipe(Effect.ignore)
+          return
+        }
+      }
+
       yield* createAndStore(name, { ...mcp, enabled: true })
     })
 

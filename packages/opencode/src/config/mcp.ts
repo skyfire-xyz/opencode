@@ -22,6 +22,13 @@ export const Local = Schema.Struct({
 }).annotate({ identifier: "McpLocalConfig" })
 export type Local = Schema.Schema.Type<typeof Local>
 
+export const Capability = Schema.Struct({
+  tool: Schema.optional(Schema.String).annotate({
+    description: "MCP tool name to call for this capability.",
+  }),
+}).annotate({ identifier: "McpCapabilityConfig" })
+export type Capability = Schema.Schema.Type<typeof Capability>
+
 export const OAuth = Schema.Struct({
   clientId: Schema.optional(Schema.String).annotate({
     description: "OAuth client ID. If not provided, dynamic client registration (RFC 7591) will be attempted.",
@@ -55,10 +62,17 @@ export const Remote = Schema.Struct({
   timeout: Schema.optional(PositiveInt).annotate({
     description: "Timeout in ms for MCP server requests. Defaults to 5000 (5 seconds) if not specified.",
   }),
-  capabilities: Schema.optional(Schema.Record(Schema.String, Schema.Struct({ tool: Schema.String }))).annotate({
-    description:
-      'Capability URIs this server can fulfill, mapped to the tool that mints the token. e.g. { "org.kyapay:pay": { "tool": "create-pay-token" } }',
-  }),
+  capabilities: Schema.optional(
+    Schema.Union([
+      Schema.Record(Schema.String, Capability).annotate({
+        description:
+          'Capability configuration keyed by URI (e.g. { "org.kyapay:kya": { "tool": "create-kya-token" }, "org.kyapay:pay": { "tool": "create-pay-token" } }).',
+      }),
+      Schema.Array(Schema.String).annotate({
+        description: "Legacy list of capability URIs supported by this MCP server (e.g. org.kyapay:kya).",
+      }),
+    ]),
+  ).annotate({ description: "Capabilities supported by this MCP server" }),
 }).annotate({ identifier: "McpRemoteConfig" })
 export type Remote = Schema.Schema.Type<typeof Remote>
 

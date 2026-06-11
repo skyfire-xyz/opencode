@@ -55,6 +55,9 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
+
+  // KYA (Know Your Agent) — optional override; see Flag.OPENCODE_KYA_SELLER_SERVICE_ID.
+  kyaSellerServiceId: Config.string("OPENCODE_KYA_SELLER_SERVICE_ID").pipe(Config.option),
 }) {}
 
 export type Info = Context.Service.Shape<typeof Service>

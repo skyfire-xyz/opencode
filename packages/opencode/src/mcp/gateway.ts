@@ -226,7 +226,12 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     if (!("type" in entry)) continue
     const info = entry as ConfigMCP.Info
     if (!("capabilities" in info) || !info.capabilities) continue
+    // The legacy array form ("org.kyapay:kya"[]) carries no tool name, so it
+    // can't be a gateway provider — only the record form maps a URI to a tool.
+    if (Array.isArray(info.capabilities)) continue
     for (const [cap, capConfig] of Object.entries(info.capabilities)) {
+      // `tool` is optional in the schema; an entry without one can't mint.
+      if (!capConfig.tool) continue
       map[cap] = { server: serverName, tool: capConfig.tool }
     }
   }

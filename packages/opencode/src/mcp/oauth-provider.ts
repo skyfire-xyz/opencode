@@ -5,6 +5,7 @@ import type {
   OAuthClientInformation,
   OAuthClientInformationFull,
 } from "@modelcontextprotocol/sdk/shared/auth.js"
+import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
 import * as Log from "@opencode-ai/core/util/log"
@@ -33,7 +34,61 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
-  ) {}
+  ) {
+    // The MCP SDK treats the auth provider's "server URL" as the *origin* where
+    // OAuth discovery endpoints live (/.well-known/*). Our MCP transport URLs
+    // often include the MCP RPC path (e.g. http://host:port/mcp). Normalize
+    // that to the origin so discovery doesn't 404 on /mcp/.well-known/* and so
+    // tokens stored by the out-of-band KYA flow (keyed by origin) are matched
+    // by getForUrl() here.
+    try {
+      const parsed = new URL(this.serverUrl)
+      this.serverUrl = parsed.origin
+    } catch {
+      // Leave as-is; the outer connection code already validates URLs.
+    }
+  }
+
+  /**
+   * The MCP SDK's StreamableHTTP transport will try OAuth discovery against the
+   * MCP origin by requesting `/.well-known/oauth-authorization-server`.
+   *
+   * Our KYA mock (and some real deployments) host OAuth metadata on a separate
+   * auth origin and advertise it via `WWW-Authenticate: ... authorization-uri="..."`
+   * on 401 responses from the MCP endpoint.
+   *
+   * To avoid a confusing "Invalid OAuth error response" when the MCP origin
+   * correctly returns plain-text 404 for `/.well-known/*`, we proactively trigger
+   * a 401 against the MCP endpoint and let the SDK parse the advertised metadata.
+   */
+  private async ensureDiscoveryViaWwwAuthenticate(): Promise<void> {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 2_000)
+
+    try {
+      const url = new URL(this.serverUrl)
+      url.pathname = "/mcp"
+      url.search = ""
+      url.hash = ""
+
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
+        signal: controller.signal,
+      })
+
+      if (res.status === 401) {
+        // Throwing the SDK's UnauthorizedError is enough for it to parse
+        // `WWW-Authenticate` and continue the OAuth discovery flow.
+        throw new UnauthorizedError("MCP server requires authentication")
+      }
+    } catch {
+      // This is a best-effort preflight; ignore failures and let the SDK do its normal flow.
+    } finally {
+      clearTimeout(timeout)
+    }
+  }
 
   get redirectUrl(): string {
     if (this.config.redirectUri) {
@@ -56,6 +111,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
+    await this.ensureDiscoveryViaWwwAuthenticate()
+
     // Check config first (pre-registered client)
     if (this.config.clientId) {
       return {
@@ -193,9 +250,47 @@ export class McpOAuthProvider implements OAuthClientProvider {
         break
     }
   }
+
+  /**
+   * SDK grant-profile hooks (getTokensForMetadata / prepareTokenRequest).
+   *
+   * These intentionally return `undefined`. The KYA jwt-bearer exchange is NOT
+   * driven through this provider — it runs out-of-band in `trySilentKya`
+   * (see mcp/index.ts), which performs RFC 9728/8414 discovery, mints the KYA
+   * token from the issuer, exchanges it for an access token, and stores it via
+   * `saveTokens()` before the transport is retried. Returning `undefined` here
+   * keeps that flow authoritative and lets the SDK fall back to the interactive
+   * authorization_code path when KYA is unavailable.
+   */
+  async getTokensForMetadata(metadata: unknown): Promise<OAuthTokens | undefined> {
+    const profiles = authorizationGrantProfilesSupported(metadata)
+    log.info("getTokensForMetadata: deferring KYA to out-of-band trySilentKya", {
+      mcpName: this.mcpName,
+      profiles: profiles.slice(0, 8),
+    })
+    return undefined
+  }
+
+  async prepareTokenRequest(_scope?: string): Promise<URLSearchParams | undefined> {
+    return undefined
+  }
 }
 
 export { OAUTH_CALLBACK_PORT, OAUTH_CALLBACK_PATH }
+
+function authorizationGrantProfilesSupported(metadata: unknown): string[] {
+  if (!metadata || typeof metadata !== "object") return []
+  const obj = metadata as Record<string, unknown>
+  const arr = obj["authorization_grant_profiles_supported"]
+  if (!Array.isArray(arr)) return []
+  return arr
+    .filter((v): v is string => typeof v === "string")
+    .flatMap((value) => {
+      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
+      return [value]
+    })
+}
 
 /**
  * Parse a redirect URI to extract port and path for the callback server.

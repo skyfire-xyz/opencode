@@ -38,7 +38,7 @@ export const DialogSelectMcp: Component = () => {
         return
       }
       if (status?.status === "needs_auth") {
-        await sdk.client.mcp.auth.authenticate({ name })
+        await sdk.client.mcp.connect({ name })
         return
       }
       await sdk.client.mcp.connect({ name })
