@@ -8,6 +8,11 @@
       "enabled": true,
       "url": "http://127.0.0.1:8787/mcp"
     },
+    "context7": {
+      "type": "remote",
+      "enabled": true,
+      "url": "https://mcp.context7.com/mcp/oauth",
+    },
     "skyfire": {
       "type": "remote",
       "enabled": true,

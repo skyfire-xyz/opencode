@@ -117,7 +117,7 @@ const useMcpToggleMutation = () => {
         return
       }
       if (status?.status === "needs_auth") {
-        await sdk.client.mcp.connect({ name })
+        await sdk.client.mcp.auth.authenticate({ name })
         return
       }
       await sdk.client.mcp.connect({ name })
