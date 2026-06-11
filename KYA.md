@@ -382,18 +382,25 @@ In the mock logs you'll see the interactive markers:
 > browser on the same machine as the OpenCode server, or set a custom
 > `oauth.redirectUri` on the MCP server config.
 
+## Testing Regular OAuth Flow
 
-## Testing Regular Oauth Flow
+Add an OAuth MCP server like Context7 to `opencode.jsonc`:
 
-Add an oauth mcp server like context7 to opencode.jsonc
-
+```jsonc
 "context7": {
   "type": "remote",
   "enabled": true,
   "url": "https://mcp.context7.com/mcp/oauth",
 },
+```
 
-Toggle on to confirm oauth is working
+Toggle it on to confirm OAuth is working.
+
+To clear stored OAuth connections and test a fresh flow:
+
+```sh
+rm ~/.local/share/opencode/mcp-auth.json
+```
 
 ---
 
