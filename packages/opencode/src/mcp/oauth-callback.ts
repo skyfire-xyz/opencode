@@ -87,12 +87,12 @@ function handleRequest(req: import("http").IncomingMessage, res: import("http").
   const error = url.searchParams.get("error")
   const errorDescription = url.searchParams.get("error_description")
 
-  log.info("received oauth callback", { hasCode: !!code, state, error })
+  log.info("[handleRequest] received oauth callback", { hasCode: !!code, state, error })
 
   // Enforce state parameter presence
   if (!state) {
     const errorMsg = "Missing required state parameter - potential CSRF attack"
-    log.error("oauth callback missing state parameter", { url: url.toString() })
+    log.error("[handleRequest] oauth callback missing state parameter", { url: url.toString() })
     res.writeHead(400, { "Content-Type": "text/html" })
     res.end(HTML_ERROR(errorMsg))
     return
@@ -121,7 +121,10 @@ function handleRequest(req: import("http").IncomingMessage, res: import("http").
   // Validate state parameter
   if (!pendingAuths.has(state)) {
     const errorMsg = "Invalid or expired state parameter - potential CSRF attack"
-    log.error("oauth callback with invalid state", { state, pendingStates: Array.from(pendingAuths.keys()) })
+    log.error("[handleRequest] oauth callback with invalid state", {
+      state,
+      pendingStates: Array.from(pendingAuths.keys()),
+    })
     res.writeHead(400, { "Content-Type": "text/html" })
     res.end(HTML_ERROR(errorMsg))
     return
@@ -144,7 +147,10 @@ export async function ensureRunning(redirectUri?: string): Promise<void> {
 
   // If server is running on a different port/path, stop it first
   if (server && (currentPort !== port || currentPath !== path)) {
-    log.info("stopping oauth callback server to reconfigure", { oldPort: currentPort, newPort: port })
+    log.info("[ensureRunning] stopping oauth callback server to reconfigure", {
+      oldPort: currentPort,
+      newPort: port,
+    })
     await stop()
   }
 
@@ -152,7 +158,7 @@ export async function ensureRunning(redirectUri?: string): Promise<void> {
 
   const running = await isPortInUse(port)
   if (running) {
-    log.info("oauth callback server already running on another instance", { port })
+    log.info("[ensureRunning] oauth callback server already running on another instance", { port })
     return
   }
 
@@ -162,7 +168,7 @@ export async function ensureRunning(redirectUri?: string): Promise<void> {
   server = createServer(handleRequest)
   await new Promise<void>((resolve, reject) => {
     server!.listen(currentPort, () => {
-      log.info("oauth callback server started", { port: currentPort, path: currentPath })
+      log.info("[ensureRunning] oauth callback server started", { port: currentPort, path: currentPath })
       resolve()
     })
     server!.on("error", reject)
@@ -214,7 +220,7 @@ export async function stop(): Promise<void> {
   if (server) {
     await new Promise<void>((resolve) => server!.close(() => resolve()))
     server = undefined
-    log.info("oauth callback server stopped")
+    log.info("[stop] oauth callback server stopped")
   }
 
   for (const [_name, pending] of pendingAuths) {

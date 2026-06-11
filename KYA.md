@@ -83,6 +83,75 @@ standard interactive Authorization Code + PKCE flow when KYA can't complete.
 
 ---
 
+## Sequence diagram
+
+![alt text](kya+oauth+sequence+diagram.png)
+
+The full connect flow, including the issuer-skip, the advertisement gate, and the
+interactive fallback. Step IDs (B/C/D) map to the spec phases.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as Agent (OpenCode)
+    participant M as MCP server (merchant)
+    participant AS as Resource AS (OAuth)
+    participant I as KYA Issuer (Skyfire)
+
+    Note over A: connect(name)
+
+    alt server advertises org.kyapay:kya (it IS the issuer)
+        A->>M: connect with configured headers (e.g. skyfire-api-key)
+        Note over A,M: KYA preflight skipped — issuer authenticates itself
+    else normal remote server (trySilentKya)
+        Note over A,AS: Phase B — discovery
+        A->>M: POST /mcp (no Authorization) [B1]
+        M-->>A: 401 WWW-Authenticate, resource_metadata=… [B2]
+        A->>M: GET /.well-known/oauth-protected-resource [B3]
+        M-->>A: { authorization_servers:[AS], resource } [B4]
+        A->>AS: GET /.well-known/oauth-authorization-server [B5]
+        AS-->>A: { token_endpoint, authorization_grant_profiles_supported } [B6]
+
+        alt KYA advertised AND issuer configured
+            Note over A,I: Phase C — mint KYA assertion
+            A->>I: connect + tools/call <kya tool> (seller selector) [C1]
+            I-->>A: KYA JWT assertion [C2]
+            Note over A,AS: Phase D — exchange + use
+            A->>AS: POST /token grant_type=jwt-bearer & assertion=<JWT> [D1]
+            AS->>I: fetch JWKS, verify assertion signature
+            AS-->>A: { access_token (aud = MCP) } [D2]
+            A->>M: POST /mcp + Authorization: Bearer <access_token> [D3]
+            M-->>A: 200 OK + tools — connected [D4]
+        else KYA advertised, NO issuer configured
+            alt OPENCODE_KYA_INTERACTIVE_FALLBACK=1
+                Note over A: fall through to interactive (below)
+            else default
+                Note over A: status = failed<br/>("KYA supported but no issuer configured")
+            end
+        else KYA not advertised (or fallback enabled)
+            Note over A,AS: Spec §5.5 — interactive Authorization Code + PKCE
+            A->>AS: GET /authorize?response_type=code&code_challenge=… (browser)
+            AS-->>A: 302 → redirect_uri?code=… (loopback callback :19876)
+            A->>AS: POST /token grant_type=authorization_code & code_verifier [PKCE]
+            AS-->>A: { access_token }
+            A->>M: POST /mcp + Authorization: Bearer <access_token>
+            M-->>A: 200 OK + tools — connected
+        end
+    end
+```
+
+Notes:
+
+- The `connect` method runs the silent-KYA preflight up front; the auto-connect
+  path runs it from the 401 catch handler. Either way the B→C→D steps are the same.
+- The AS sets the access token's `aud` to the MCP server's canonical resource URI;
+  the MCP server validates it as a plain OAuth 2.1 resource server (no KYA awareness).
+- The interactive fallback's redirect lands on a loopback callback on the **server**
+  host, so it only completes when the browser and instance server share a machine
+  (unless a custom `oauth.redirectUri` is configured).
+
+---
+
 ## Running locally
 
 ### 1) Install dependencies
@@ -180,7 +249,6 @@ OpenCode supports both, with the following precedence:
 
 2. **`sellerDomainOrUrl`** — derived from the **target MCP server's URL** when
    the env var above is unset:
-
    - For a public MCP server like `https://mcp.example.com/mcp`, the seller is
      `mcp.example.com`.
    - For a localhost/loopback target (e.g. the mock at
@@ -260,6 +328,59 @@ curl -sS \
 ```
 
 You should see `merchant-mcp` become `connected`.
+
+---
+
+## Testing the interactive OAuth fallback
+
+KYA is an optimization layered on top of standard OAuth. To exercise the
+interactive Authorization Code + PKCE fallback locally, run the mock with KYA
+disabled so the AS behaves like a vanilla OAuth server.
+
+1. Start the mock servers with `MOCK_DISABLE_KYA=1`:
+
+   ```bash
+   MOCK_DISABLE_KYA=1 bun run packages/opencode/script/mock-mcp-kya-server.ts
+   ```
+
+   The AS now omits `kya` from `authorization_grant_profiles_supported` and
+   serves an auto-approving `/authorize` endpoint plus an `authorization_code`
+   token grant (PKCE `S256` enforced). The startup banner shows
+   `Mode: interactive (KYA disabled)`.
+
+2. Configure only the protected server — no KYA issuer is needed:
+
+   ```jsonc
+   { "mcp": { "merchant-mcp": { "type": "remote", "url": "http://127.0.0.1:8787/mcp" } } }
+   ```
+
+3. Start the OpenCode server with the fallback flag so an auth-required server
+   with no issuer falls through to interactive OAuth instead of hard-failing:
+
+   ```bash
+   OPENCODE_KYA_INTERACTIVE_FALLBACK=1 bun dev serve --port 4096 --log-level DEBUG --print-logs
+   ```
+
+4. Trigger auth, either way:
+   - **Automatic fallback:** connect the server (web UI, or
+     `POST /mcp/merchant-mcp/connect`). With the flag set, the status becomes
+     `needs_auth` — without it you'd get a `failed` "KYA supported but no issuer
+     configured". Then complete it with `opencode mcp auth merchant-mcp`.
+   - **Direct:** `opencode mcp auth merchant-mcp` runs the interactive flow
+     regardless of connect state (this path doesn't depend on the flag).
+
+   `opencode mcp auth` opens the browser at the mock `/authorize`, which
+   auto-approves and redirects to the loopback callback
+   (`http://127.0.0.1:19876/mcp/oauth/callback`); OpenCode exchanges the code at
+   `/token` and stores the resulting access token.
+
+In the mock logs you'll see the interactive markers:
+`OAuth interactive flow BEGIN (authorization_code)` → `authServer: authorize -> redirect`
+→ `OAuth token exchange BEGIN/END (authorization_code)` → `OAuth interactive flow END`.
+
+> Because the callback is a server-host loopback (`127.0.0.1:19876`), run the
+> browser on the same machine as the OpenCode server, or set a custom
+> `oauth.redirectUri` on the MCP server config.
 
 ---
 
