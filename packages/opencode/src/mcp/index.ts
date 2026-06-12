@@ -191,6 +191,13 @@ function trySilentKya(args: {
    */
   sellerServiceId?: string | undefined
 }) {
+  // Tracks whether we passed the `supportsKya` gate below. Discovery and the
+  // oauth-metadata fetch recover internally (their own catch handlers), so any
+  // error that reaches the outer Effect.catch necessarily occurs *after* KYA was
+  // confirmed advertised — issuer connect, KYA tool call, or token exchange.
+  // Reporting kyaAdvertised:true in that case prevents a genuine KYA failure from
+  // silently degrading to interactive OAuth.
+  let advertised = false
   return Effect.gen(function* () {
     const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = args.sellerServiceId
       ? { sellerServiceId: args.sellerServiceId }
@@ -256,6 +263,7 @@ function trySilentKya(args: {
       log.info("[trySilentKya] KYA not advertised", { name: args.name })
       return { minted: false, kyaAdvertised: false } satisfies KyaMintResult
     }
+    advertised = true
 
     if (!args.issuer) {
       return {
@@ -395,12 +403,17 @@ function trySilentKya(args: {
 
     return { minted: true, kyaAdvertised: true } satisfies KyaMintResult
   }).pipe(
-    Effect.catch((e) =>
-      Effect.succeed({
-        minted: false,
-        kyaAdvertised: false,
-      } satisfies KyaMintResult),
-    ),
+    Effect.catch((e) => {
+      const error = e instanceof Error ? e.message : String(e)
+      // If KYA was advertised, a thrown failure (issuer connect / tool call /
+      // token exchange) must surface as a KYA failure rather than fall through
+      // to interactive OAuth. Only pre-gate errors report kyaAdvertised:false.
+      return Effect.succeed(
+        advertised
+          ? ({ minted: false, kyaAdvertised: true, error } satisfies KyaMintResult)
+          : ({ minted: false, kyaAdvertised: false } satisfies KyaMintResult),
+      )
+    }),
     Effect.tap((result) => Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result }))),
   )
 }
