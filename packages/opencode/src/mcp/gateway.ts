@@ -241,7 +241,7 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
 /**
  * Find the provider entry for a given settlement type.
  *
- * Settlement types look like "org.kyapay:pay:card". Capabilities in config
+ * Settlement types look like "org.kyapay:pay:coin". Capabilities in config
  * are prefixes like "org.kyapay:pay" or "org.kyapay". We match the most
  * specific prefix first.
  */

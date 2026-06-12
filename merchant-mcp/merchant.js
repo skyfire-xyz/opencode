@@ -62,7 +62,7 @@ const SHIPPING_FLAT = 0.001
 
 // Round to 6 decimal places so sub-cent prices don't collapse to $0.00.
 const r6 = (n) => Math.round(n * 1e6) / 1e6
-const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:card", "org.kyapay:pay:card"]
+const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:coin"]
 
 const CATALOG = [
   {

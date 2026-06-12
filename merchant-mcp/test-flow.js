@@ -122,7 +122,7 @@ async function main() {
         name: "pay",
         arguments: { shipping_address: "123 Test St, San Francisco, CA 94102" },
         _meta: {
-          "payments/settlement/type": "org.kyapay:pay:card",
+          "payments/settlement/type": "org.kyapay:pay:coin",
           "payments/settlement/token": testToken,
           "payments/amount/total": checkoutMeta["payments/amount/total"],
           "payments/settlement/currency": "USD",

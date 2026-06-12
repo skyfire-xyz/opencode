@@ -32,7 +32,7 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
   [`packages/opencode/src/config/mcp.ts`](../packages/opencode/src/config/mcp.ts).
 - `buildCapabilityMap` folds all servers into a `{ capability → { server, tool } }` map,
   and `findProviderForSettlement` does **longest-prefix matching** on the `:`-delimited
-  URI (so `org.kyapay:kya-pay:card` matches before falling back to `org.kyapay`). Both
+  URI (so `org.kyapay:kya-pay:coin` matches before falling back to `org.kyapay`). Both
   live in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts).
 - A server that declares `capabilities` is treated as payment **infrastructure**: its
   tools (`create-pay-token`, `find-sellers`, …) are **hidden from the agent's tool
