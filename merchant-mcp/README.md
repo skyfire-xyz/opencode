@@ -61,7 +61,7 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
 
 | Component                                                                                         | Role                                                                                                                                                     |
 | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Merchant MCP server** ([`merchant.js`](merchant.js))                                            | Sells products. `checkout`/`pay` return `isError:true` + a `payments/*` `_meta` signal describing what payment they need.                                |
+| **Merchant MCP server** ([`merchant.js`](merchant.js))                                            | Sells products. `checkout` returns a plain order summary (a quote, no signal); only `pay` emits the `payments/*` signal.                                 |
 | **Skyfire wallet MCP server** (`sky-mcp`, port `4000`)                                            | Mints payment tokens. It is a thin proxy to the Skyfire **backend API** at `API_HOST` (default `http://localhost:3000`, prod `https://api.skyfire.xyz`). |
 | **The gateway** (`executeWithGateway` in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts)) | Intercepts every MCP tool call, catches payment signals, resolves them autonomously, and retries.                                                        |
 
@@ -85,10 +85,11 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
 7. The LLM receives only the final success. It never saw the signal, the issuer, or the
    token.
 
-> **Note on `checkout` vs `pay`:** in the mock merchant, `checkout` is informational and
-> _never_ consumes a token, so retrying it just re-returns the payment signal. `pay` is
-> the tool that actually settles. Steer the agent toward "pay for it" so it lands on
-> `pay`.
+> **Note on `checkout` vs `pay`:** `checkout` is a **quote** — it returns a plain order
+> summary with **no** `payments/*` signal, so the gateway passes it straight through and
+> mints nothing. Only `pay` emits the settlement signal, so the PAY token is minted exactly
+> once, at pay time (not before the user confirms). Emitting the signal from `checkout`
+> would make the gateway authorize payment during the preview — deliberately avoided.
 
 ---
 
@@ -231,7 +232,6 @@ wallet can mint **before** launching the TUI.
 | Token mint fails with **`402 … Insufficient balance`**                             | Buyer wallet has no funds for the requested amount.                                                                                    | Fund the wallet, or lower the order total below the balance (see [Money model](#money-model)).                 |
 | **`Gateway error: … did not return a token. Issuer said: …`**                      | The issuer returned an error in plain text with `isError` unset; the gateway now surfaces that real message.                           | Read the `Issuer said:` detail — it's the upstream reason (often balance or auth).                             |
 | Agent calls `skyfire_create-pay-token` / `find-sellers` directly                   | Provider-tool hiding regressed (the `providerServers` filter in `mcp/index.ts`).                                                       | Ensure the skyfire server still declares `capabilities`; confirm its tools are absent from `/mcp`'s tool list. |
-| `checkout` loops returning "Payment Required"                                      | `checkout` never consumes a token by design.                                                                                           | Steer the agent to `pay`, which actually settles.                                                              |
 | `skyfire` shows **failed** in `/mcp`                                               | The wallet MCP server on `:4000` isn't running.                                                                                        | Start `sky-mcp` (step 2 of Setup).                                                                             |
 
 ---

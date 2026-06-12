@@ -323,15 +323,27 @@ function callMerchantTool(name, args, meta) {
     const subTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const taxes = r6(subTotal * TAX_RATE)
     const total = r6(subTotal + taxes + SHIPPING_FLAT)
+    const items = cart.map((item) => `  - ${item.quantity}x ${item.name} @ $${item.price}`).join("\n")
+    // Quote only — deliberately a normal (non-error) result with NO payments/*
+    // signal. Emitting the signal here would make the gateway mint a PAY token at
+    // checkout, i.e. authorize payment before the user confirms. Settlement is the
+    // `pay` tool's job; checkout just previews the order.
     return {
       content: [
         {
           type: "text",
-          text: `Payment Required: $${total} (subtotal $${subTotal} + tax $${taxes} + shipping $${SHIPPING_FLAT})`,
+          text: [
+            `Order summary:`,
+            items,
+            `  Subtotal: $${subTotal}`,
+            `  Taxes: $${taxes}`,
+            `  Shipping: $${SHIPPING_FLAT}`,
+            `  Total: $${total}`,
+            ``,
+            `Confirm these details with the user, then call \`pay\` to complete the purchase.`,
+          ].join("\n"),
         },
       ],
-      isError: true,
-      _meta: paymentSignal(total, subTotal, taxes),
     }
   }
 
