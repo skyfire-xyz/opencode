@@ -224,6 +224,36 @@ wallet can mint **before** launching the TUI.
 
 ---
 
+## Watching the flow live — logs
+
+The opencode **MCP client** logs every tool call, payment signal, token mint, and gateway
+retry to `~/.local/share/opencode/log/dev.log`. Open a second terminal and tail it:
+
+```bash
+tail -F ~/.local/share/opencode/log/dev.log | grep --line-buffered --color=always "service=mcp"
+```
+
+For better highlighting of specific fields (tool names, amounts, settlement types):
+
+```bash
+tail -F ~/.local/share/opencode/log/dev.log | grep --line-buffered --color=always -E "service=mcp|toolName=|settlementType=|total=|gateway:"
+```
+
+This filters to just the MCP and gateway lines.
+
+For the **merchant server side**, watch the logs in the same terminal where the merchant is run.
+
+You'll see JSON-RPC calls, 401 challenges, and KYA token-exchange verifications
+(verified JTI, issuer, payload shape).
+
+**Tips:**
+
+- `--color=always` highlights the matched patterns in the output (green for matches).
+- `-F` (capital) keeps following across truncations — dev mode truncates `dev.log` on each `bun dev` restart.
+- Omit the grep to see all logs (other services too): `tail -F ~/.local/share/opencode/log/dev.log`.
+
+---
+
 ## Troubleshooting
 
 | Symptom                                                                            | Cause                                                                                                                                  | Fix                                                                                                            |
