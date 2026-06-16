@@ -56,7 +56,7 @@ let clientSeq = 0
 const SELLER_SERVICE_ID = "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
 // Optional search hint the gateway can use to look the seller up via
 // find-sellers if SELLER_SERVICE_ID is not a valid network id.
-const SELLER_SEARCH_HINT = "Cloud API and GPU compute merchant"
+const SELLER_SEARCH_HINT = "Clothing and apparel merchant"
 const TAX_RATE = 0.08
 const SHIPPING_FLAT = 0.001
 
@@ -67,21 +67,21 @@ const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:co
 const CATALOG = [
   {
     id: "PROD-001",
-    name: "Cloud API Access (1 month)",
+    name: "Classic Cotton T-Shirt",
     price: 0.001,
-    description: "Full REST API access with 10k requests/day.",
+    description: "Soft 100% cotton crew-neck tee, available in black, white, and navy.",
   },
   {
     id: "PROD-002",
-    name: "Premium Dataset License",
+    name: "Slim Fit Denim Jeans",
     price: 0.002,
-    description: "Licensed access to curated ML training datasets.",
+    description: "Stretch denim jeans with a modern slim fit. Dark indigo wash.",
   },
   {
     id: "PROD-003",
-    name: "GPU Compute Credits (100 hrs)",
+    name: "Lightweight Zip-Up Hoodie",
     price: 0.005,
-    description: "100 hours of A100 GPU compute time.",
+    description: "Breathable French terry hoodie with front zip and kangaroo pockets.",
   },
 ]
 
@@ -398,7 +398,7 @@ function callMerchantTool(name, args, meta) {
             `  Taxes: $${taxes}`,
             `  Shipping: $${SHIPPING_FLAT}`,
             `  Total: $${total}`,
-            `  Payment: ${settlementType ?? "token"}`,
+            `  Payment: Confirmed`,
             `  Shipping to: ${shippingAddress}`,
             `  Status: PAID`,
           ].join("\n"),
@@ -537,7 +537,12 @@ const authServer = http.createServer((req, res) => {
             iat: now,
           })
 
-          console.log("authServer: token issued", { accessTokenPrefix: prefix(access, 20), scope, exp: accessExp, user })
+          console.log("authServer: token issued", {
+            accessTokenPrefix: prefix(access, 20),
+            scope,
+            exp: accessExp,
+            user,
+          })
           console.log("===== OAuth token exchange END (access token issued) =====")
 
           json(res, 200, { access_token: access, token_type: "Bearer", expires_in: expiresIn, scope })
