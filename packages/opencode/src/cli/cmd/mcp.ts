@@ -19,6 +19,13 @@ import { modify, applyEdits } from "jsonc-parser"
 import { Filesystem } from "@/util/filesystem"
 import { Bus } from "../../bus"
 import { Effect } from "effect"
+import { Flag } from "@opencode-ai/core/flag/flag"
+import {
+  kyaIssuerFromConfig,
+  extractJwtFromText,
+  discoverResourceAuthServer,
+  exchangeAssertionForAccessToken,
+} from "../../mcp/kya"
 
 function getAuthStatusIcon(status: MCP.AuthStatus): string {
   switch (status) {
@@ -97,6 +104,96 @@ function authState() {
   })
 }
 
+/**
+ * Localhost/loopback targets don't exist in the Skyfire seller directory, so
+ * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so QA mints a valid KYA token against a known seller.
+ */
+const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
+
+function kyaSellerDomainOrUrl(targetUrl: string): string {
+  const host = (() => {
+    try {
+      return new URL(targetUrl).hostname.toLowerCase()
+    } catch {
+      return ""
+    }
+  })()
+  const isLocal =
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host === "0.0.0.0" ||
+    host.endsWith(".localhost") ||
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(host)
+  return isLocal || !host ? LOCAL_TARGET_PLACEHOLDER_DOMAIN : host
+}
+
+async function mintKyaAccessToken(input: {
+  config: Config.Info
+  auth: McpAuth.Interface
+  targetServerUrl: string
+}): Promise<{ accessToken: string } | { error: string }> {
+  const issuer = kyaIssuerFromConfig(input.config.mcp as Record<string, ConfigMCP.Info> | undefined)
+  if (!issuer) {
+    return {
+      error:
+        'No KYA issuer server found. Add "capabilities": { "org.kyapay:kya": { "tool": "create-kya-token" } } to a configured remote MCP server (e.g. the skyfire server in opencode.jsonc).',
+    }
+  }
+
+  // Pick the seller selector: explicit env override wins; otherwise derive from
+  // the target MCP server URL (with `mcp-server.com` substituted for localhost).
+  const envSellerServiceId = Flag.OPENCODE_KYA_SELLER_SERVICE_ID
+  const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = envSellerServiceId
+    ? { sellerServiceId: envSellerServiceId }
+    : { sellerDomainOrUrl: kyaSellerDomainOrUrl(input.targetServerUrl) }
+
+  // Phase C — mint the KYA token (a JWT assertion) via the issuer MCP server tool.
+  const transport = new StreamableHTTPClientTransport(new URL(issuer.config.url), {
+    requestInit: issuer.config.headers ? { headers: issuer.config.headers } : undefined,
+  })
+  const client = new Client({ name: "opencode-cli", version: InstallationVersion })
+  await client.connect(transport)
+
+  let assertion: string | undefined
+  try {
+    const request = { name: issuer.tool, arguments: sellerArg }
+    prompts.log.info(`Sending ${issuer.tool} request to ${issuer.config.url}:\n    ${JSON.stringify(request)}`)
+    const toolResult = await client.callTool(request)
+
+    const text = Array.isArray((toolResult as any).content)
+      ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
+      : String((toolResult as any).content ?? "")
+
+    assertion = extractJwtFromText(text)
+    if (!assertion) {
+      return { error: `${issuer.tool} did not return a JWT assertion. Output: ${text.slice(0, 500)}` }
+    }
+  } finally {
+    await client.close().catch(() => {})
+  }
+
+  // Phase B — discover the target server's Resource AS token endpoint.
+  const discovered = await discoverResourceAuthServer(input.targetServerUrl).catch(() => undefined)
+  if (!discovered) {
+    return { error: `Could not discover an authorization server / token endpoint for ${input.targetServerUrl}.` }
+  }
+
+  // Phase D — exchange the KYA assertion for an access token (RFC 7523 jwt-bearer).
+  prompts.log.info(`Exchanging KYA assertion for access token at ${discovered.tokenEndpoint}`)
+  try {
+    const accessToken = await exchangeAssertionForAccessToken(discovered.tokenEndpoint, assertion)
+    if (!accessToken) return { error: "Token exchange response did not include an access_token" }
+    return { accessToken }
+  } catch (e) {
+    return { error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
 export const McpCommand = cmd({
   command: "mcp",
   describe: "manage MCP (Model Context Protocol) servers",
@@ -149,6 +246,9 @@ export const McpListCommand = effectCmd({
       } else if (status.status === "disabled") {
         statusIcon = "○"
         statusText = "disabled"
+      } else if (status.status === "not_connected") {
+        statusIcon = "○"
+        statusText = "not connected"
       } else if (status.status === "needs_auth") {
         statusIcon = "⚠"
         statusText = "needs authentication"
@@ -156,9 +256,6 @@ export const McpListCommand = effectCmd({
         statusIcon = "✗"
         statusText = "needs client registration"
         hint = "\n    " + status.error
-      } else if (status.status === "not_connected") {
-        statusIcon = "○"
-        statusText = "not connected"
       } else {
         statusIcon = "✗"
         statusText = "failed"
@@ -650,7 +747,7 @@ export const McpDebugCommand = effectCmd({
         Effect.all({
           authStatus: mcp.getAuthStatus(serverName),
           entry: auth.get(serverName),
-        }),
+        }).pipe(Effect.provide(Config.defaultLayer)),
       )
       prompts.log.info(`Auth status: ${getAuthStatusIcon(authStatus)} ${getAuthStatusText(authStatus)}`)
 
@@ -707,8 +804,68 @@ export const McpDebugCommand = effectCmd({
         if (response.status === 401) {
           prompts.log.warn("Server returned 401 Unauthorized")
 
-          // Try to discover OAuth metadata
           const oauthConfig = typeof serverConfig.oauth === "object" ? serverConfig.oauth : undefined
+
+          const minted = await mintKyaAccessToken({ config, auth, targetServerUrl: serverConfig.url })
+          if ("error" in minted) {
+            prompts.log.warn(`KYA token mint skipped: ${minted.error}`)
+          } else {
+            await Effect.runPromise(
+              auth.updateTokens(
+                serverName,
+                {
+                  accessToken: minted.accessToken,
+                  refreshToken: undefined,
+                  // Best-effort: mock token is JWT, expiry is validated server-side.
+                  expiresAt: undefined,
+                  scope: undefined,
+                },
+                // Keep serverUrl consistent with McpOAuthProvider normalization.
+                new URL(serverConfig.url).origin,
+              ),
+            )
+            prompts.log.success(`KYA token minted and stored for ${serverName}`)
+
+            // Prove the token works end-to-end by reconnecting and listing tools.
+            const proofSpinner = prompts.spinner()
+            proofSpinner.start("Re-testing MCP connection with stored token...")
+            try {
+              const transport = new StreamableHTTPClientTransport(new URL(serverConfig.url), {
+                authProvider: new McpOAuthProvider(
+                  serverName,
+                  serverConfig.url,
+                  {
+                    clientId: oauthConfig?.clientId,
+                    clientSecret: oauthConfig?.clientSecret,
+                    scope: oauthConfig?.scope,
+                    redirectUri: oauthConfig?.redirectUri,
+                  },
+                  { onRedirect: async () => {} },
+                  auth,
+                ),
+              })
+
+              const client = new Client({ name: "opencode-debug", version: InstallationVersion })
+              await client.connect(transport)
+              const tools = await client.listTools()
+              await client.close().catch(() => {})
+              proofSpinner.stop(`Authenticated MCP connect succeeded (${tools.tools.length} tool(s))`)
+
+              const toolNames = tools.tools.map((t) => t.name).sort()
+              const limit = 20
+              for (const name of toolNames.slice(0, limit)) {
+                prompts.log.info(`  - ${name}`)
+              }
+              if (toolNames.length > limit) {
+                prompts.log.info(`  ...and ${toolNames.length - limit} more`)
+              }
+            } catch (error) {
+              proofSpinner.stop("Authenticated MCP connect failed", 1)
+              prompts.log.error(error instanceof Error ? error.message : String(error))
+            }
+          }
+
+          // Try to discover OAuth metadata
           const authProvider = new McpOAuthProvider(
             serverName,
             serverConfig.url,

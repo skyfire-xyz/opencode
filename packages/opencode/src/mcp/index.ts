@@ -130,7 +130,7 @@ const sanitize = (s: string) => s.replace(/[^a-zA-Z0-9_-]/g, "_")
 
 function remoteURL(key: string, value: string) {
   if (URL.canParse(value)) return new URL(value)
-  log.warn("invalid remote mcp url", { key })
+  log.warn("[remoteURL] invalid remote mcp url", { key })
 }
 
 function isOutputSchemaValidationError(error: Error) {
@@ -212,7 +212,7 @@ function trySilentKya(args: {
         const resourceMetadataUrl =
           (await probeResourceMetadataUrl(args.serverUrl)) ??
           new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
-        log.info("kya connect preflight: fetching protected resource metadata", {
+        log.info("[trySilentKya] fetching protected resource metadata", {
           name: args.name,
           resourceMetadataUrl,
         })
@@ -234,7 +234,7 @@ function trySilentKya(args: {
         const authServer = authServers[0]
         if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
 
-        log.info("kya connect preflight: fetching AS metadata", { name: args.name, authServer })
+        log.info("[trySilentKya] fetching AS metadata", { name: args.name, authServer })
         const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
           headers: { accept: "application/json" },
         })
@@ -245,7 +245,7 @@ function trySilentKya(args: {
             }).then((r) => (r.ok ? r.json() : undefined))
 
         const profiles = authorizationGrantProfilesSupported(asJson)
-        log.info("kya connect preflight: AS grant profiles", {
+        log.info("[trySilentKya] AS grant profiles", {
           name: args.name,
           authServer,
           supportsKya: profiles.includes("kya"),
@@ -257,7 +257,7 @@ function trySilentKya(args: {
     })
 
     if (!kyaSupport.supportsKya) {
-      log.info("kya connect preflight: KYA not advertised", { name: args.name })
+      log.info("[trySilentKya] KYA not advertised", { name: args.name })
       return { minted: false, kyaAdvertised: false } satisfies KyaMintResult
     }
 
@@ -267,7 +267,7 @@ function trySilentKya(args: {
     const sellerArg: { sellerServiceId: string } | { sellerDomainOrUrl: string } = resolvedSellerServiceId
       ? { sellerServiceId: resolvedSellerServiceId }
       : { sellerDomainOrUrl: kyaSellerDomainOrUrl(args.serverUrl) }
-    log.info("kya connect preflight: resolved seller selector", {
+    log.info("[trySilentKya] resolved seller selector", {
       name: args.name,
       sellerSelector: "sellerServiceId" in sellerArg ? "sellerServiceId" : "sellerDomainOrUrl",
       sellerValue: "sellerServiceId" in sellerArg ? sellerArg.sellerServiceId : sellerArg.sellerDomainOrUrl,
@@ -283,7 +283,7 @@ function trySilentKya(args: {
     }
     const issuer = args.issuer
 
-    log.info("kya connect preflight: connecting to skyfire issuer", {
+    log.info("[trySilentKya] connecting to skyfire issuer", {
       name: args.name,
       issuer: issuer.name,
       issuerUrl: issuer.config.url,
@@ -301,7 +301,7 @@ function trySilentKya(args: {
       catch: (e) => (e instanceof Error ? e : new Error(String(e))),
     })
 
-    log.info("MCP.connect KYA: calling issuer KYA tool", {
+    log.info("[trySilentKya] calling issuer KYA tool", {
       name: args.name,
       issuer: issuer.name,
       issuerUrl: issuer.config.url,
@@ -318,7 +318,7 @@ function trySilentKya(args: {
       ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
       : String((toolResult as any).content ?? "")
 
-    log.info("kya connect preflight: skyfire tool response", {
+    log.info("[trySilentKya] skyfire tool response", {
       name: args.name,
       textPrefix: text.slice(0, 200),
       length: text.length,
@@ -333,7 +333,7 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
-    log.info("kya connect preflight: extracted assertion", {
+    log.info("[trySilentKya] extracted assertion", {
       name: args.name,
       assertionPrefix: assertion.slice(0, 16),
       assertionLength: assertion.length,
@@ -363,7 +363,7 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
-    log.info("kya connect preflight: exchanging assertion for access token", { name: args.name, tokenEndpoint })
+    log.info("[trySilentKya] exchanging assertion for access token", { name: args.name, tokenEndpoint })
 
     const form = new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -392,7 +392,7 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
-    log.info("kya connect preflight: token exchange success", {
+    log.info("[trySilentKya] token exchange success", {
       name: args.name,
       accessTokenPrefix: accessToken.slice(0, 12),
       accessTokenLength: accessToken.length,
@@ -404,7 +404,7 @@ function trySilentKya(args: {
       new URL(args.serverUrl).origin,
     )
 
-    log.info("kya connect preflight: stored access token", {
+    log.info("[trySilentKya] stored access token", {
       name: args.name,
       tokenKey: new URL(args.serverUrl).origin,
     })
@@ -430,7 +430,7 @@ function listTools(key: string, client: MCPClient, timeout: number) {
     Effect.catch((error) => {
       if (!isOutputSchemaValidationError(error)) return Effect.fail(error)
 
-      log.warn("failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
+      log.warn("[listTools] failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
       return Effect.tryPromise({
         try: () =>
           client.request({ method: "tools/list" }, TolerantListToolsResultSchema, {
@@ -499,7 +499,7 @@ function convertMcpTool(
 function defs(key: string, client: MCPClient, timeout?: number) {
   return listTools(key, client, timeout ?? DEFAULT_TIMEOUT).pipe(
     Effect.catch((err) => {
-      log.error("failed to get tools from client", { key, error: err })
+      log.error("[defs] failed to get tools from client", { key, error: err })
       return Effect.succeed(undefined)
     }),
   )
@@ -514,7 +514,7 @@ function fetchFromClient<T extends { name: string }>(
   return Effect.tryPromise({
     try: () => listFn(client),
     catch: (e: any) => {
-      log.error(`failed to get ${label}`, { clientName, error: e.message })
+      log.error(`[fetchFromClient] failed to get ${label}`, { clientName, error: e.message })
       return e
     },
   }).pipe(
@@ -641,7 +641,7 @@ export const layer = Layer.effect(
           },
           {
             onRedirect: async (url) => {
-              log.info("oauth redirect requested", { key, url: url.toString() })
+              log.info("[connectRemote] oauth redirect requested", { key, url: url.toString() })
             },
           },
           auth,
@@ -692,7 +692,7 @@ export const layer = Layer.effect(
                 error instanceof UnauthorizedError || (authProvider && lastError.message.includes("OAuth"))
 
               if (isAuthError) {
-                log.info("mcp server requires authentication", { key, transport: name })
+                log.info("[connectRemote] mcp server requires authentication", { key, transport: name })
                 stopTransportFallback = true
 
                 if (lastError.message.includes("registration") || lastError.message.includes("client_id")) {
@@ -741,7 +741,7 @@ export const layer = Layer.effect(
                   if (minted.minted) {
                     // Token stored — retry StreamableHTTP once with a fresh transport.
                     kyaRetried = true
-                    log.info("kya mint: stored token, retrying StreamableHTTP connect", { key })
+                    log.info("[connectRemote] kya mint: stored token, retrying StreamableHTTP connect", { key })
                     return yield* connectTransport(freshStreamable(), connectTimeout).pipe(
                       Effect.map((client) => ({ client, transportName: name })),
                       Effect.catch((retryError) => {
@@ -776,7 +776,7 @@ export const layer = Layer.effect(
                 return undefined
               }
 
-              log.debug("transport connection failed", {
+              log.debug("[connectRemote] transport connection failed", {
                 key,
                 transport: name,
                 url: mcp.url,
@@ -788,7 +788,7 @@ export const layer = Layer.effect(
           ),
         )
         if (result) {
-          log.info("connected", { key, transport: result.transportName })
+          log.info("[connectRemote] connected", { key, transport: result.transportName })
           return { client: result.client as MCPClient | undefined, status: { status: "connected" } as Status }
         }
         // If this was an auth error, stop trying other transports
@@ -820,7 +820,7 @@ export const layer = Layer.effect(
         },
       })
       transport.stderr?.on("data", (chunk: Buffer) => {
-        log.info(`mcp stderr: ${chunk.toString()}`, { key })
+        log.info(`[connectLocal] mcp stderr: ${chunk.toString()}`, { key })
       })
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT
@@ -831,7 +831,7 @@ export const layer = Layer.effect(
         })),
         Effect.catch((error): Effect.Effect<{ client: MCPClient | undefined; status: Status }> => {
           const msg = error instanceof Error ? error.message : String(error)
-          log.error("local mcp startup failed", { key, command: mcp.command, cwd, error: msg })
+          log.error("[connectLocal] local mcp startup failed", { key, command: mcp.command, cwd, error: msg })
           return Effect.succeed({ client: undefined, status: { status: "failed", error: msg } })
         }),
       )
@@ -839,11 +839,11 @@ export const layer = Layer.effect(
 
     const create = Effect.fn("MCP.create")(function* (key: string, mcp: ConfigMCP.Info) {
       if (mcp.enabled === false) {
-        log.info("mcp server disabled", { key })
+        log.info("[create] mcp server disabled", { key })
         return DISABLED_RESULT
       }
 
-      log.info("found", { key, type: mcp.type })
+      log.info("[create] found", { key, type: mcp.type })
 
       const { client: mcpClient, status } =
         mcp.type === "remote"
@@ -860,7 +860,7 @@ export const layer = Layer.effect(
         return { status: { status: "failed", error: "Failed to get tools" } } satisfies CreateResult
       }
 
-      log.info("create() successfully created client", { key, toolCount: listed.length })
+      log.info("[create] successfully created client", { key, toolCount: listed.length })
       return { mcpClient, status, defs: listed } satisfies CreateResult
     })
     const cfgSvc = yield* Config.Service
@@ -891,7 +891,7 @@ export const layer = Layer.effect(
 
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
-        log.info("tools list changed notification received", { server: name })
+        log.info("[watch] tools list changed notification received", { server: name })
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
         const listed = await bridge.promise(defs(name, client, timeout))
@@ -1094,7 +1094,7 @@ export const layer = Layer.effect(
 
             const listed = s.defs[clientName]
             if (!listed) {
-              log.warn("missing cached tools for connected server", { clientName })
+              log.warn("[tools] missing cached tools for connected server", { clientName })
               return
             }
 
@@ -1148,13 +1148,13 @@ export const layer = Layer.effect(
       const s = yield* InstanceState.get(state)
       const client = s.clients[clientName]
       if (!client) {
-        log.warn(`client not found for ${label}`, { clientName })
+        log.warn(`[withClient] client not found for ${label}`, { clientName })
         return undefined
       }
       return yield* Effect.tryPromise({
         try: () => fn(client),
         catch: (e: any) => {
-          log.error(`failed to ${label}`, { clientName, ...meta, error: e?.message })
+          log.error(`[withClient] failed to ${label}`, { clientName, ...meta, error: e?.message })
           return e
         },
       }).pipe(Effect.orElseSucceed(() => undefined))
@@ -1272,7 +1272,7 @@ export const layer = Layer.effect(
         return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
       }
 
-      log.info("opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
+      log.info("[authenticate] opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
 
@@ -1293,7 +1293,7 @@ export const layer = Layer.effect(
           }),
         ),
         Effect.catch(() => {
-          log.warn("failed to open browser, user must open URL manually", { mcpName })
+          log.warn("[authenticate] failed to open browser, user must open URL manually", { mcpName })
           return bus.publish(BrowserOpenFailed, { mcpName, url: result.authorizationUrl }).pipe(Effect.ignore)
         }),
       )
@@ -1317,7 +1317,7 @@ export const layer = Layer.effect(
       const result = yield* Effect.tryPromise({
         try: () => transport.finishAuth(authorizationCode).then(() => true as const),
         catch: (error) => {
-          log.error("failed to finish oauth", { mcpName, error })
+          log.error("[finishAuth] failed to finish oauth", { mcpName, error })
           return error
         },
       }).pipe(Effect.option)
@@ -1338,7 +1338,7 @@ export const layer = Layer.effect(
       yield* auth.remove(mcpName)
       McpOAuthCallback.cancelPending(mcpName)
       pendingOAuthTransports.delete(mcpName)
-      log.info("removed oauth credentials", { mcpName })
+      log.info("[removeAuth] removed oauth credentials", { mcpName })
     })
 
     const supportsOAuth = Effect.fn("MCP.supportsOAuth")(function* (mcpName: string) {
