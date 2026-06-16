@@ -6,6 +6,10 @@ opencode transparently mints and injects a payment token from a Skyfire wallet M
 server. **The LLM never sees the payment token, the issuer, or the issuer's tools.**
 It only ever sees the products and the final "order confirmed."
 
+The merchant is also KYA-protected: connecting to it requires a **KYA token** (Know Your
+Agent) minted by Skyfire and exchanged for an OAuth access token — all handled silently
+by opencode before the agent ever sees a tool.
+
 This directory is the demo harness (a mock merchant + verification scripts). The
 gateway itself lives in opencode core (see [File map](#file-map)).
 
@@ -14,15 +18,16 @@ gateway itself lives in opencode core (see [File map](#file-map)).
 ## The "capabilities" extension
 
 The gateway is driven by a small extension to opencode's MCP config: an optional
-`capabilities` array on any MCP server.
+`capabilities` object on any MCP server, mapping capability URIs to the tool that
+fulfills them.
 
 ```jsonc
 "skyfire": {
   "type": "remote",
-  "url": "http://localhost:4000/mcp",
-  "headers": { "skyfire-api-key": "<key>" },
-  // Settlement-type URIs this server can fulfill, mapped to the tool that mints the token.
+  "url": "https://mcp-qa.skyfire.xyz/mcp",
+  "headers": { "skyfire-api-key": "{env:SKYFIRE_API_KEY}" },
   "capabilities": {
+    "org.kyapay:kya": { "tool": "create-kya-token" },
     "org.kyapay:pay": { "tool": "create-pay-token" }
   }
 }
@@ -30,9 +35,17 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
 
 - The field is defined on both `Local` and `Remote` configs in
   [`packages/opencode/src/config/mcp.ts`](../packages/opencode/src/config/mcp.ts).
+- Two capability families are used:
+  - **`org.kyapay:kya`** — KYA authentication. The gateway calls `create-kya-token` to
+    mint a JWT assertion, exchanges it for an OAuth access token via `jwt-bearer` grant,
+    and uses that token to authenticate the MCP connection (handled in
+    [`kya.ts`](../packages/opencode/src/mcp/kya.ts)).
+  - **`org.kyapay:pay`** — Payment settlement. The gateway calls `create-pay-token` to
+    mint a payment JWT when a merchant tool demands payment (handled in
+    [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts)).
 - `buildCapabilityMap` folds all servers into a `{ capability → { server, tool } }` map,
   and `findProviderForSettlement` does **longest-prefix matching** on the `:`-delimited
-  URI (so `org.kyapay:kya-pay:coin` matches before falling back to `org.kyapay`). Both
+  URI (so `org.kyapay:pay:coin` matches before falling back to `org.kyapay`). Both
   live in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts).
 - A server that declares `capabilities` is treated as payment **infrastructure**: its
   tools (`create-pay-token`, `find-sellers`, …) are **hidden from the agent's tool
@@ -45,25 +58,40 @@ The gateway is driven by a small extension to opencode's MCP config: an optional
 ## Architecture
 
 ```text
-┌─────────┐   tool call    ┌──────────────┐   payments/* signal   ┌──────────────┐
-│  LLM /  │ ─────────────▶ │   Gateway    │ ◀──── isError:true ── │   Merchant   │
-│  agent  │ ◀───────────── │ (opencode)   │                       │  MCP server  │
-└─────────┘  final result  └──────┬───────┘                       └──────────────┘
-                                  │ mint token (hidden from LLM)
+                                                       ┌──────────────────────┐
+                                                       │  Merchant MCP server │
+                                                       │   :8787 (HTTP/MCP)   │
+                                                       │   :8788 (mock OAuth) │
+┌─────────┐   tool call    ┌──────────────┐            └───────┬──────────────┘
+│  LLM /  │ ─────────────▶ │   Gateway    │ ◀─── 401 (KYA) ───┘  on connect
+│  agent  │ ◀───────────── │ (opencode)   │ ◀─── payments/* ──── on pay
+└─────────┘  final result  └──────┬───────┘
+                                  │ KYA mint (auth) + PAY mint (settlement)
                                   ▼
-                           ┌──────────────┐   /api/v1/tokens    ┌──────────────┐
-                           │   sky-mcp    │ ──────────────────▶ │  Skyfire API │
-                           │  :4000 proxy │                     │  (backend)   │
-                           └──────────────┘                     └──────────────┘
+                           ┌──────────────────────┐
+                           │  Skyfire MCP issuer   │
+                           │ mcp-qa.skyfire.xyz    │
+                           └──────────────────────┘
 ```
+
+**Two invisible flows, one issuer:**
+
+1. **KYA (auth):** Merchant returns 401 → opencode discovers the OAuth AS →
+   calls `create-kya-token` on Skyfire → exchanges the JWT assertion for an
+   access token → retries the connection with `Authorization: Bearer`. The
+   agent never sees the auth handshake.
+
+2. **PAY (settlement):** Agent calls `pay` → merchant returns `isError` with
+   `payments/*` signal → gateway calls `create-pay-token` on Skyfire → retries
+   `pay` with the token in `_meta`. The agent only sees "Order confirmed."
 
 **Actors:**
 
-| Component                                                                                         | Role                                                                                                                                                     |
-| ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Merchant MCP server** ([`merchant.js`](merchant.js))                                            | Sells products. `checkout` returns a plain order summary (a quote, no signal); only `pay` emits the `payments/*` signal.                                 |
-| **Skyfire wallet MCP server** (`sky-mcp`, port `4000`)                                            | Mints payment tokens. It is a thin proxy to the Skyfire **backend API** at `API_HOST` (default `http://localhost:3000`, prod `https://api.skyfire.xyz`). |
-| **The gateway** (`executeWithGateway` in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts)) | Intercepts every MCP tool call, catches payment signals, resolves them autonomously, and retries.                                                        |
+| Component                                                                                         | Role                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Merchant MCP server** ([`merchant.js`](merchant.js))                                            | HTTP MCP server (`:8787`) + mock OAuth AS (`:8788`). Sells products; `pay` emits the `payments/*` signal. Requires KYA auth to connect. |
+| **Skyfire MCP issuer** (`mcp-qa.skyfire.xyz`)                                                     | Mints KYA tokens (auth) and PAY tokens (settlement). Its tools are hidden from the agent.                                               |
+| **The gateway** (`executeWithGateway` in [`gateway.ts`](../packages/opencode/src/mcp/gateway.ts)) | Intercepts every MCP tool call, catches payment signals, resolves them autonomously, and retries.                                       |
 
 ---
 
@@ -142,40 +170,67 @@ as a `looseObject`, so custom keys survive validation) and surfaces on the serve
 
 ### 1. Configure opencode
 
-[`.opencode/opencode.jsonc`](../.opencode/opencode.jsonc) wires the two servers. The
-`skyfire` server declares `capabilities` and the merchant runs locally:
+[`.opencode/opencode.jsonc`](../.opencode/opencode.jsonc) wires the two servers:
 
 ```jsonc
 {
   "mcp": {
+    // Protected merchant — connecting triggers a 401 + KYA auth handshake.
+    // Start it first: `cd merchant-mcp && npm install && npm start`.
+    "merchant": {
+      "type": "remote",
+      "enabled": true,
+      "url": "http://127.0.0.1:8787/mcp",
+    },
+    // Skyfire issuer — hidden from the agent. Mints KYA tokens to authenticate
+    // the merchant connection and PAY tokens to settle purchases.
     "skyfire": {
       "type": "remote",
-      "url": "http://localhost:4000/mcp",
-      "headers": { "skyfire-api-key": "<your-key>" },
+      "enabled": true,
+      "url": "https://mcp-qa.skyfire.xyz/mcp",
       "capabilities": {
+        "org.kyapay:kya": { "tool": "create-kya-token" },
         "org.kyapay:pay": { "tool": "create-pay-token" },
       },
-    },
-    "merchant": {
-      "type": "local",
-      // Path is relative to packages/opencode/ (opencode's CWD), not the repo root.
-      "command": ["node", "../../merchant-mcp/merchant.js"],
+      "headers": {
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
+      },
     },
   },
 }
 ```
 
-### 2. Start the Skyfire wallet MCP server pointed at a live backend
+> **Note on `"type": "remote"`:** In MCP config, `"type"` refers to the **transport**,
+> not the network location. `"remote"` means HTTP (StreamableHTTP/SSE), `"local"` means
+> spawn a child process with stdio. The merchant is an HTTP server on localhost, so it's
+> `"remote"` even though it runs locally.
 
-`sky-mcp` is a proxy; it must point at a reachable Skyfire backend via `API_HOST`
-(it defaults to `http://localhost:3000`, which is usually nothing). For prod:
+### 2. Set the Skyfire API key
+
+Export your Skyfire QA API key so the `{env:SKYFIRE_API_KEY}` placeholder resolves:
 
 ```bash
-cd /path/to/sky-mcp
-API_HOST="https://api.skyfire.xyz" node --enable-source-maps build/server.js
+export SKYFIRE_API_KEY="your-skyfire-api-key"
 ```
 
-### 3. Provide a real seller id and a funded wallet
+### 3. Start the merchant MCP server
+
+The merchant is an HTTP server (`:8787`) with a built-in mock OAuth AS (`:8788`):
+
+```bash
+cd merchant-mcp
+npm install
+node merchant.js
+```
+
+You should see:
+
+```
+Mock MCP server listening on 127.0.0.1:8787
+Mock OAuth server listening on 127.0.0.1:8788
+```
+
+### 4. Provide a real seller id and a funded wallet
 
 - `SELLER_SERVICE_ID` in [`merchant.js`](merchant.js) must be a **real Skyfire seller
   id** (discover one via `find-sellers`). The mock merchant has no directory entry of
@@ -190,13 +245,16 @@ API_HOST="https://api.skyfire.xyz" node --enable-source-maps build/server.js
 From the repo root (so opencode picks up `.opencode/opencode.jsonc`):
 
 ```bash
-bun dev --print-logs
+cd packages/opencode
+bun dev
 ```
 
 In the TUI:
 
 1. Run `/mcp` and confirm both `skyfire` and `merchant` are **connected**. Skyfire's
-   tools will _not_ appear in the agent's tool list — that's intended.
+   tools will _not_ appear in the agent's tool list — that's intended. The merchant
+   connection will have silently gone through the KYA auth handshake (401 → KYA mint →
+   OAuth exchange → Bearer token → connected).
 2. Prompt the agent (phrase it toward `pay`):
 
    > Find a GPU compute product, add one to my cart, and pay for it. Ship to 123 Demo
@@ -216,7 +274,7 @@ node merchant-mcp/test-flow.js
 # real token. Pass a search term to exercise the seller lookup.
 node merchant-mcp/verify-skyfire.mjs "GPU compute"
 # Override target/key via env:
-SKYFIRE_URL="http://localhost:4000/mcp" SKYFIRE_API_KEY="<key>" node merchant-mcp/verify-skyfire.mjs
+SKYFIRE_URL="https://mcp-qa.skyfire.xyz/mcp" SKYFIRE_API_KEY="<key>" node merchant-mcp/verify-skyfire.mjs
 ```
 
 `verify-skyfire.mjs` is the fastest way to confirm the backend is reachable and the
@@ -256,13 +314,15 @@ You'll see JSON-RPC calls, 401 challenges, and KYA token-exchange verifications
 
 ## Troubleshooting
 
-| Symptom                                                                            | Cause                                                                                                                                  | Fix                                                                                                            |
-| ---------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Every authenticated call returns **`API Error`**, but `get-current-datetime` works | `sky-mcp` can't reach the Skyfire **backend** (`API_HOST` / `:3000` is down or wrong). The MCP server is healthy; the upstream is not. | Set `API_HOST` to a live backend (`https://api.skyfire.xyz`) and restart `sky-mcp`.                            |
-| Token mint fails with **`402 … Insufficient balance`**                             | Buyer wallet has no funds for the requested amount.                                                                                    | Fund the wallet, or lower the order total below the balance (see [Money model](#money-model)).                 |
-| **`Gateway error: … did not return a token. Issuer said: …`**                      | The issuer returned an error in plain text with `isError` unset; the gateway now surfaces that real message.                           | Read the `Issuer said:` detail — it's the upstream reason (often balance or auth).                             |
-| Agent calls `skyfire_create-pay-token` / `find-sellers` directly                   | Provider-tool hiding regressed (the `providerServers` filter in `mcp/index.ts`).                                                       | Ensure the skyfire server still declares `capabilities`; confirm its tools are absent from `/mcp`'s tool list. |
-| `skyfire` shows **failed** in `/mcp`                                               | The wallet MCP server on `:4000` isn't running.                                                                                        | Start `sky-mcp` (step 2 of Setup).                                                                             |
+| Symptom                                                                | Cause                                                                                                        | Fix                                                                                                            |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `merchant` shows **failed** — `KYA supported but no issuer configured` | Skyfire server is missing or doesn't declare the `org.kyapay:kya` capability.                                | Add the `capabilities` block to the skyfire config as shown above.                                             |
+| `merchant` shows **failed** — `create-kya-token did not return a JWT`  | Skyfire issuer couldn't mint a KYA token (bad API key, network issue).                                       | Verify `SKYFIRE_API_KEY` is set and valid; run `verify-skyfire.mjs` to test.                                   |
+| Token mint fails with **`402 … Insufficient balance`**                 | Buyer wallet has no funds for the requested amount.                                                          | Fund the wallet, or lower the order total below the balance (see [Money model](#money-model)).                 |
+| **`Gateway error: … did not return a token. Issuer said: …`**          | The issuer returned an error in plain text with `isError` unset; the gateway now surfaces that real message. | Read the `Issuer said:` detail — it's the upstream reason (often balance or auth).                             |
+| Agent calls `skyfire_create-pay-token` / `find-sellers` directly       | Provider-tool hiding regressed (the `providerServers` filter in `mcp/index.ts`).                             | Ensure the skyfire server still declares `capabilities`; confirm its tools are absent from `/mcp`'s tool list. |
+| `skyfire` shows **failed** in `/mcp`                                   | Can't reach `mcp-qa.skyfire.xyz`, or the API key is invalid.                                                 | Check network connectivity and API key.                                                                        |
+| `merchant` shows **failed** — `Connection closed`                      | Merchant HTTP server on `:8787` isn't running.                                                               | Start the merchant first: `cd merchant-mcp && node merchant.js`.                                               |
 
 ---
 

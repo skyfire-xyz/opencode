@@ -2,30 +2,33 @@
   "$schema": "https://opencode.ai/config.json",
   // Skyfire Agentic Commerce Gateway — Example Configuration
   //
-  // This configuration wires up the Skyfire Wallet MCP server and a Merchant
-  // MCP server through the autonomous catch-and-resolve gateway.
-  //
-  // Flow:
-  //   1. LLM calls merchant's submit_order with just a product_id
-  //   2. Merchant rejects with { isError: true, _meta: { requires: "org.kyapay:pay", amount, sellerServiceId } }
-  //   3. Gateway intercepts, autonomously calls Skyfire's create-pay-token
-  //   4. Gateway retries submit_order with the token injected in _meta
-  //   5. LLM receives only the final success — never sees the token
+  // Two invisible flows, one issuer:
+  //   1. KYA (auth): merchant returns 401 → opencode mints a KYA token via
+  //      Skyfire → exchanges it for an OAuth access token → connects.
+  //   2. PAY (settlement): agent calls pay → merchant signals payment required
+  //      → gateway mints a PAY token via Skyfire → retries with token in _meta
+  //      → order confirmed. The LLM never sees the token or the issuer.
   "mcp": {
+    // Protected merchant — connecting triggers a 401 + KYA auth handshake.
+    // Start it first: `cd merchant-mcp && npm install && node merchant.js`.
+    "merchant": {
+      "type": "remote",
+      "enabled": true,
+      "url": "http://127.0.0.1:8787/mcp",
+    },
+    // Skyfire issuer — hidden from the agent. Mints KYA tokens to authenticate
+    // the merchant connection and PAY tokens to settle purchases.
     "skyfire": {
       "type": "remote",
-      "url": "http://localhost:4000/mcp",
-      "headers": {
-        "skyfire-api-key": "",
-      },
-      // Declares that this server can provide payment tokens, mapped to the tool that mints them.
+      "enabled": true,
+      "url": "https://mcp-qa.skyfire.xyz/mcp",
       "capabilities": {
+        "org.kyapay:kya": { "tool": "create-kya-token" },
         "org.kyapay:pay": { "tool": "create-pay-token" },
       },
-    },
-    "merchant": {
-      "type": "local",
-      "command": ["node", "../../merchant-mcp/merchant.js"],
+      "headers": {
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
+      },
     },
   },
 }
