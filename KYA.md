@@ -76,10 +76,14 @@ When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
 
 For KYA, the flow is **non-interactive** (no user browser step). If something opens an `/authorize` URL, it usually means KYA detection or the jwt-bearer exchange failed.
 
-By default, if the server advertises KYA but no issuer is configured (or minting
-fails), OpenCode surfaces a clear failure rather than falling back to interactive
-OAuth. Set `OPENCODE_KYA_INTERACTIVE_FALLBACK=1` to instead fall through to the
-standard interactive Authorization Code + PKCE flow when KYA can't complete.
+By default, if the server **advertises KYA** but no issuer is configured (or
+minting fails), OpenCode surfaces a clear failure rather than falling back to
+interactive OAuth. Set `OPENCODE_KYA_INTERACTIVE_FALLBACK=1` to fall through to
+the standard interactive Authorization Code + PKCE flow in that case.
+
+If the server does **not** advertise KYA, OpenCode always falls back to the
+interactive flow regardless of that flag (KYA is purely an opt-in optimization
+keyed on the AS metadata, per spec §5.5).
 
 ---
 
@@ -305,11 +309,18 @@ instance server and talks to it over HTTP.
    issues `POST /mcp/merchant-mcp/connect` against the instance server — the same
    entry point as the HTTP API below — and triggers the KYA preflight.
 
+For a server already showing `needs_auth`, clicking it in the MCP dialog (or the
+status popover) calls `mcp.auth.authenticate`, which drives the **interactive**
+OAuth flow — it opens the browser on the **server** host and waits for the
+loopback callback.
+
 > Note: the silent KYA flow is fully non-interactive, so it works over a remote
-> frontend. The interactive OAuth fallback, however, redirects to a loopback
-> callback on the **server** host (`http://127.0.0.1:19876/...`), so it only
-> completes when the browser and instance server share a machine unless a custom
-> `redirectUri` is configured.
+> frontend. The interactive flow, however, opens the browser on the server host
+> and redirects to a loopback callback there (`http://127.0.0.1:19876/...`), so it
+> only completes when the browser and instance server share a machine (i.e. local
+> dev) unless a custom `oauth.redirectUri` is configured. For a truly remote web
+> app the split `mcp.auth.start` → open-in-user-browser → `mcp.auth.callback` flow
+> (with an app-hosted redirect) would be required.
 
 #### HTTP API
 
@@ -354,20 +365,26 @@ disabled so the AS behaves like a vanilla OAuth server.
    { "mcp": { "merchant-mcp": { "type": "remote", "url": "http://127.0.0.1:8787/mcp" } } }
    ```
 
-3. Start the OpenCode server with the fallback flag so an auth-required server
-   with no issuer falls through to interactive OAuth instead of hard-failing:
+3. Start the OpenCode server normally — **no flag needed**. Because the mock no
+   longer advertises KYA, an auth-required connect falls back to interactive
+   automatically:
 
    ```bash
-   OPENCODE_KYA_INTERACTIVE_FALLBACK=1 bun dev serve --port 4096 --log-level DEBUG --print-logs
+   bun dev serve --port 4096 --log-level DEBUG --print-logs
    ```
 
 4. Trigger auth, either way:
    - **Automatic fallback:** connect the server (web UI, or
-     `POST /mcp/merchant-mcp/connect`). With the flag set, the status becomes
-     `needs_auth` — without it you'd get a `failed` "KYA supported but no issuer
-     configured". Then complete it with `opencode mcp auth merchant-mcp`.
+     `POST /mcp/merchant-mcp/connect`). Since KYA isn't advertised, the status
+     becomes `needs_auth` with no flag required. Then complete it with
+     `opencode mcp auth merchant-mcp`.
    - **Direct:** `opencode mcp auth merchant-mcp` runs the interactive flow
-     regardless of connect state (this path doesn't depend on the flag).
+     regardless of connect state.
+
+   > `OPENCODE_KYA_INTERACTIVE_FALLBACK=1` is only needed for the **other** branch:
+   > when a server **does** advertise KYA but no issuer is configured (run the mock
+   > _without_ `MOCK_DISABLE_KYA`). There the default is a hard failure, and the flag
+   > makes it fall through to interactive instead.
 
    `opencode mcp auth` opens the browser at the mock `/authorize`, which
    auto-approves and redirects to the loopback callback
@@ -375,8 +392,9 @@ disabled so the AS behaves like a vanilla OAuth server.
    `/token` and stores the resulting access token.
 
 In the mock logs you'll see the interactive markers:
-`OAuth interactive flow BEGIN (authorization_code)` → `authServer: authorize -> redirect`
-→ `OAuth token exchange BEGIN/END (authorization_code)` → `OAuth interactive flow END`.
+`===== OAuth interactive flow BEGIN (authorization_code) =====` → `[authServer] authorize -> redirect`
+→ `===== OAuth token exchange BEGIN (authorization_code) =====` → `===== OAuth token exchange END (access token issued) =====`
+→ `===== OAuth interactive flow END (authorization_code) =====`.
 
 > Because the callback is a server-host loopback (`127.0.0.1:19876`), run the
 > browser on the same machine as the OpenCode server, or set a custom
@@ -408,18 +426,23 @@ rm ~/.local/share/opencode/mcp-auth.json
 
 ### 1) OpenCode logs (port 4096)
 
-With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs during the flow, including:
+With `--log-level DEBUG --print-logs`, OpenCode prints non-sensitive debug logs
+during the flow. Each line is tagged with its emitting function, e.g.:
 
-- `service=mcp transport connect attempt`
-- `kya connect preflight: fetching protected resource metadata`
-- `kya connect preflight: AS grant profiles`
-- `MCP.connect KYA: calling issuer KYA tool`
-- `kya connect preflight: skyfire tool response`
-- `kya connect preflight: extracted assertion`
-- `kya connect preflight: exchanging assertion for access token`
-- `kya connect preflight: token exchange success`
-- `kya connect preflight: stored access token`
-- `kya mint: stored token, retrying StreamableHTTP connect`
+- `===== KYA auth flow BEGIN =====` / `===== KYA auth flow END =====` (flow boundaries)
+- `[connectRemote] transport connect attempt`
+- `[trySilentKya] fetching protected resource metadata`
+- `[trySilentKya] AS grant profiles`
+- `[trySilentKya] calling issuer KYA tool`
+- `[trySilentKya] skyfire tool response`
+- `[trySilentKya] extracted assertion`
+- `[trySilentKya] exchanging assertion for access token`
+- `[trySilentKya] token exchange success`
+- `[trySilentKya] stored access token`
+- `[connectRemote] kya mint: stored token, retrying StreamableHTTP connect`
+
+Tip: `--print-logs 2>&1 | grep --line-buffered -E "=====|\[trySilentKya\]"` surfaces
+just the KYA flow.
 
 ### 2) Mock OAuth server logs (port 8788)
 
@@ -441,15 +464,16 @@ bun run packages/opencode/script/mock-mcp-kya-server.ts
 
 Look for logs like:
 
-- `authServer: request` (every request)
-- `authServer: token(jwt-bearer) request`
-- `verifyKyaAssertion: verified`
-- `authServer: token issued`
-- `mcpServer: request` (every request)
-- `mcpServer: unauthorized`
-- `mcpServer: authorized`
-- `mcpServer: initialize`
-- `mcpServer: tools/list`
+- `[authServer] request` (every request)
+- `[authServer] token(jwt-bearer) request`
+- `[verifyKyaAssertion] verified`
+- `[authServer] token issued`
+- `[mcpServer] request` (every request)
+- `[mcpServer] unauthorized`
+- `[mcpServer] authorized`
+- `[mcpServer] initialize`
+- `[mcpServer] tools/list`
+- `===== MCP auth flow BEGIN / END =====` and `===== OAuth token exchange BEGIN / END =====` (flow boundaries)
 
 ### 2) Start OpenCode server with logs
 
@@ -462,9 +486,9 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 Look for logs like:
 
-- `service=mcp connecting`
-- `service=mcp transport connect attempt`
-- `service=mcp.oauth saved oauth tokens`
+- `service=mcp … [connectRemote] connecting`
+- `service=mcp … [connectRemote] transport connect attempt`
+- `service=mcp.oauth … [saveTokens] saved oauth tokens`
 
 ---
 
