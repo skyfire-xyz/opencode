@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { PositiveInt } from "@opencode-ai/core/schema"
+import { PositiveInt, type DeepMutable } from "@opencode-ai/core/schema"
 
 export const Local = Schema.Struct({
   type: Schema.Literal("local").annotate({ description: "Type of MCP server connection" }),
@@ -20,14 +20,10 @@ export const Local = Schema.Struct({
       'Capability URIs this server can fulfill, mapped to the tool that mints the token. e.g. { "org.kyapay:pay": { "tool": "create-pay-token" } }',
   }),
 }).annotate({ identifier: "McpLocalConfig" })
-export type Local = Schema.Schema.Type<typeof Local>
-
-export const Capability = Schema.Struct({
-  tool: Schema.optional(Schema.String).annotate({
-    description: "MCP tool name to call for this capability.",
-  }),
-}).annotate({ identifier: "McpCapabilityConfig" })
-export type Capability = Schema.Schema.Type<typeof Capability>
+// `Config.Info` runs the whole config through `DeepMutable`, so the mcp entries
+// embedded there are mutable. Mirror that here so standalone `ConfigMCP` types
+// stay assignable to the config-derived ones (e.g. in predicates over Config.Info["mcp"]).
+export type Local = DeepMutable<Schema.Schema.Type<typeof Local>>
 
 export const OAuth = Schema.Struct({
   clientId: Schema.optional(Schema.String).annotate({
@@ -45,11 +41,22 @@ export const OAuth = Schema.Struct({
     description: "OAuth redirect URI (default: http://127.0.0.1:19876/mcp/oauth/callback).",
   }),
 }).annotate({ identifier: "McpOAuthConfig" })
-export type OAuth = Schema.Schema.Type<typeof OAuth>
+export type OAuth = DeepMutable<Schema.Schema.Type<typeof OAuth>>
+
+export const Capability = Schema.Struct({
+  tool: Schema.optional(Schema.String).annotate({
+    description: "MCP tool name to call for this capability.",
+  }),
+}).annotate({ identifier: "McpCapabilityConfig" })
+export type Capability = DeepMutable<Schema.Schema.Type<typeof Capability>>
 
 export const Remote = Schema.Struct({
   type: Schema.Literal("remote").annotate({ description: "Type of MCP server connection" }),
   url: Schema.String.annotate({ description: "URL of the remote MCP server" }),
+  transport: Schema.optional(Schema.Union([Schema.Literal("streamable_http"), Schema.Literal("sse")])).annotate({
+    description:
+      "Transport preference for remote MCP servers. Defaults to trying StreamableHTTP first, then SSE as a fallback.",
+  }),
   enabled: Schema.optional(Schema.Boolean).annotate({
     description: "Enable or disable the MCP server on startup",
   }),
@@ -74,9 +81,9 @@ export const Remote = Schema.Struct({
     ]),
   ).annotate({ description: "Capabilities supported by this MCP server" }),
 }).annotate({ identifier: "McpRemoteConfig" })
-export type Remote = Schema.Schema.Type<typeof Remote>
+export type Remote = DeepMutable<Schema.Schema.Type<typeof Remote>>
 
 export const Info = Schema.Union([Local, Remote]).annotate({ discriminator: "type" })
-export type Info = Schema.Schema.Type<typeof Info>
+export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
 export * as ConfigMCP from "./mcp"

@@ -1,4 +1,5 @@
 import { MCP } from "@/mcp"
+import { ConfigMCP } from "@/config/mcp"
 import { Effect, Schema } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
@@ -14,7 +15,9 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
     })
 
     const add = Effect.fn("McpHttpApi.add")(function* (ctx: { payload: typeof AddPayload.Type }) {
-      const result = (yield* mcp.add(ctx.payload.name, ctx.payload.config)).status
+      // The HTTP payload decodes to effect's readonly `Schema.Type`; `mcp.add`
+      // stores into the mutable config state, so bridge at this boundary.
+      const result = (yield* mcp.add(ctx.payload.name, ctx.payload.config as ConfigMCP.Info)).status
       return yield* Schema.decodeUnknownEffect(StatusMap)(
         "status" in result ? { [ctx.payload.name]: result } : result,
       ).pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))

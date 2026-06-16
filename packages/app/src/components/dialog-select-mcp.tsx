@@ -38,7 +38,11 @@ export const DialogSelectMcp: Component = () => {
         return
       }
       if (status?.status === "needs_auth") {
-        await sdk.client.mcp.connect({ name })
+        // Drive the interactive OAuth flow rather than just re-connecting.
+        // NOTE: authenticate() opens the browser on the server host and waits for
+        // the loopback callback, so it's effectively local-only. Remote setups
+        // would need the split start/callback flow with an app-hosted redirect.
+        await sdk.client.mcp.auth.authenticate({ name })
         return
       }
       await sdk.client.mcp.connect({ name })

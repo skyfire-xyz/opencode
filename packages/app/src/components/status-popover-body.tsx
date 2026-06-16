@@ -117,7 +117,9 @@ const useMcpToggleMutation = () => {
         return
       }
       if (status?.status === "needs_auth") {
-        await sdk.client.mcp.connect({ name })
+        // Drive the interactive OAuth flow rather than just re-connecting (local-only;
+        // opens the browser on the server host). Mirrors dialog-select-mcp.
+        await sdk.client.mcp.auth.authenticate({ name })
         return
       }
       await sdk.client.mcp.connect({ name })
