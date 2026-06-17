@@ -1,18 +1,61 @@
-import { expect, beforeEach, afterEach } from "bun:test"
-import { Effect } from "effect"
+import { expect, mock, beforeEach, afterEach } from "bun:test"
+import { Effect, Layer } from "effect"
 import { testEffect } from "../lib/effect"
-import { MCP } from "../../src/mcp/index"
 
-// detectKyaSupport / trySilentKya talk to the network via global fetch.
-// Route the RFC 9728 + RFC 8414 discovery calls to a server that advertises
-// the Skyfire KYA grant profile.
+// Mock UnauthorizedError to match the SDK's class (instanceof checks in connectRemote).
+class MockUnauthorizedError extends Error {
+  constructor(message?: string) {
+    super(message ?? "Unauthorized")
+    this.name = "UnauthorizedError"
+  }
+}
+
+// The merchant connection 401s, which is what triggers KYA detection in connectRemote.
+void mock.module("@modelcontextprotocol/sdk/client/streamableHttp.js", () => ({
+  StreamableHTTPClientTransport: class MockStreamableHTTP {
+    constructor(_url: URL, _options?: unknown) {}
+    async start() {
+      throw new MockUnauthorizedError()
+    }
+    async finishAuth(_code: string) {}
+    async close() {}
+  },
+}))
+
+void mock.module("@modelcontextprotocol/sdk/client/sse.js", () => ({
+  SSEClientTransport: class MockSSE {
+    constructor(_url: URL, _options?: unknown) {}
+    async start() {
+      throw new Error("Mock SSE transport cannot connect")
+    }
+    async close() {}
+  },
+}))
+
+void mock.module("@modelcontextprotocol/sdk/client/index.js", () => ({
+  Client: class MockClient {
+    async connect(transport: { start: () => Promise<void> }) {
+      await transport.start()
+    }
+    setNotificationHandler() {}
+    async listTools() {
+      return { tools: [{ name: "test_tool", inputSchema: { type: "object", properties: {} } }] }
+    }
+    async close() {}
+  },
+}))
+
+void mock.module("@modelcontextprotocol/sdk/client/auth.js", () => ({
+  UnauthorizedError: MockUnauthorizedError,
+}))
+
+// KYA detection (detectKyaSupport) talks to the network via global fetch. Route the
+// RFC 9728 + RFC 8414 discovery to a server that advertises the KYA grant profile.
 const realFetch = globalThis.fetch
 beforeEach(() => {
   globalThis.fetch = (async (input: any, init?: any) => {
     const url = typeof input === "string" ? input : (input?.url ?? String(input))
     const method = init?.method ?? "GET"
-    // Unauthenticated probe (POST initialize): answer non-401 so the probe
-    // falls back to the default well-known protected-resource location.
     if (url === "https://kya.example.com/mcp" && method === "POST") {
       return new Response("{}", { status: 200 })
     }
@@ -38,11 +81,30 @@ afterEach(() => {
   globalThis.fetch = realFetch
 })
 
-const mcpTest = testEffect(MCP.defaultLayer)
+const { MCP } = await import("../../src/mcp/index")
+const { Bus } = await import("../../src/bus")
+const { Config } = await import("../../src/config/config")
+const { McpAuth } = await import("../../src/mcp/auth")
+const { AppFileSystem } = await import("@opencode-ai/core/filesystem")
+const { CrossSpawnSpawner } = await import("@opencode-ai/core/cross-spawn-spawner")
+
+const mcpTest = testEffect(
+  Layer.mergeAll(
+    MCP.layer.pipe(
+      Layer.provide(McpAuth.defaultLayer),
+      Layer.provideMerge(Bus.layer),
+      Layer.provide(Config.defaultLayer),
+      Layer.provide(CrossSpawnSpawner.defaultLayer),
+      Layer.provide(AppFileSystem.defaultLayer),
+    ),
+    McpAuth.defaultLayer,
+  ),
+)
+
 const kyaConfig = { mcp: { "kya-server": { type: "remote" as const, url: "https://kya.example.com/mcp" } } }
 
 mcpTest.instance(
-  "connect() gates a KYA server on consent and does not mint",
+  "connect() without consent gates a KYA server (needs_kya_consent) and does not mint",
   () =>
     MCP.Service.use((mcp) =>
       Effect.gen(function* () {
@@ -55,11 +117,11 @@ mcpTest.instance(
 )
 
 mcpTest.instance(
-  "confirmKya() proceeds past the gate and mints (fails clearly when no issuer is configured)",
+  "connect({ kyaConsent: true }) proceeds to mint (fails clearly when no issuer is configured)",
   () =>
     MCP.Service.use((mcp) =>
       Effect.gen(function* () {
-        yield* mcp.confirmKya("kya-server")
+        yield* mcp.connect("kya-server", { kyaConsent: true })
         const status = yield* mcp.status()
         const entry = status["kya-server"]
         expect(entry?.status).toBe("failed")

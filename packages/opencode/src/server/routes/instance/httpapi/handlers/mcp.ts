@@ -75,9 +75,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return { success: true as const }
     })
 
-    const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: { params: { name: string } }) {
+    const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: {
+      params: { name: string }
+      query: { kyaConsent?: boolean }
+    }) {
       yield* mcp
-        .connect(ctx.params.name)
+        .connect(ctx.params.name, { kyaConsent: ctx.query.kyaConsent })
         .pipe(
           Effect.catchTag("MCP.NotFoundError", (error) =>
             Effect.fail(
@@ -86,20 +89,6 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
           ),
         )
       return true
-    })
-
-    const kyaConfirm = Effect.fn("McpHttpApi.kyaConfirm")(function* (ctx: { params: { name: string } }) {
-      yield* mcp
-        .confirmKya(ctx.params.name)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
-          ),
-        )
-      const status = yield* mcp.status()
-      return status[ctx.params.name] ?? ({ status: "not_connected" as const })
     })
 
     const disconnect = Effect.fn("McpHttpApi.disconnect")(function* (ctx: { params: { name: string } }) {
@@ -123,7 +112,6 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       .handle("authAuthenticate", authAuthenticate)
       .handle("authRemove", authRemove)
       .handle("connect", connect)
-      .handle("kyaConfirm", kyaConfirm)
       .handle("disconnect", disconnect)
   }),
 )

@@ -98,8 +98,6 @@ import type {
   McpConnectResponses,
   McpDisconnectErrors,
   McpDisconnectResponses,
-  McpKyaConfirmErrors,
-  McpKyaConfirmResponses,
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusErrors,
@@ -2097,40 +2095,6 @@ export class Auth2 extends HeyApiClient {
   }
 }
 
-export class Kya extends HeyApiClient {
-  /**
-   * Confirm Skyfire KYA sign-in
-   *
-   * Mint and exchange a Skyfire KYA token to connect an MCP server, after the user has consented.
-   */
-  public confirm<ThrowOnError extends boolean = false>(
-    parameters: {
-      name: string
-      directory?: string
-      workspace?: string
-    },
-    options?: Options<never, ThrowOnError>,
-  ) {
-    const params = buildClientParams(
-      [parameters],
-      [
-        {
-          args: [
-            { in: "path", key: "name" },
-            { in: "query", key: "directory" },
-            { in: "query", key: "workspace" },
-          ],
-        },
-      ],
-    )
-    return (options?.client ?? this.client).post<McpKyaConfirmResponses, McpKyaConfirmErrors, ThrowOnError>({
-      url: "/mcp/{name}/kya/confirm",
-      ...options,
-      ...params,
-    })
-  }
-}
-
 export class Mcp extends HeyApiClient {
   /**
    * Get MCP status
@@ -2202,13 +2166,14 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Connect an MCP server.
+   * Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.
    */
   public connect<ThrowOnError extends boolean = false>(
     parameters: {
       name: string
       directory?: string
       workspace?: string
+      kyaConsent?: "true" | "false"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2220,6 +2185,7 @@ export class Mcp extends HeyApiClient {
             { in: "path", key: "name" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { in: "query", key: "kyaConsent" },
           ],
         },
       ],
@@ -2264,11 +2230,6 @@ export class Mcp extends HeyApiClient {
   private _auth?: Auth2
   get auth(): Auth2 {
     return (this._auth ??= new Auth2({ client: this.client }))
-  }
-
-  private _kya?: Kya
-  get kya(): Kya {
-    return (this._kya ??= new Kya({ client: this.client }))
   }
 }
 

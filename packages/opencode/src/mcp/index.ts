@@ -577,8 +577,7 @@ export interface Interface {
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
-  readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
-  readonly confirmKya: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly connect: (name: string, opts?: { kyaConsent?: boolean }) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -636,6 +635,7 @@ export const layer = Layer.effect(
     const connectRemote = Effect.fn("MCP.connectRemote")(function* (
       key: string,
       mcp: ConfigMCP.Info & { type: "remote" },
+      consented: boolean,
     ) {
       const oauthDisabled = mcp.oauth === false
       const oauthConfig = typeof mcp.oauth === "object" ? mcp.oauth : undefined
@@ -731,53 +731,76 @@ export const layer = Layer.effect(
                   return undefined
                 }
 
-                // Silent KYA: an auth-required server may advertise the KYA grant
-                // profile. The issuer authenticates via its own headers, so never
-                // try to mint a KYA token for the issuer itself.
-                if (name === "StreamableHTTP" && !kyaRetried && !hasKyaCapability(mcp)) {
-                  const cfg = yield* cfgSvc.get()
-                  const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+                // An auth-required server may advertise the KYA grant profile.
+                // Detect it from the 401 — never for the issuer itself, for
+                // header/api-key-authenticated servers, or when OAuth is disabled.
+                if (
+                  name === "StreamableHTTP" &&
+                  !kyaRetried &&
+                  !hasKyaCapability(mcp) &&
+                  mcp.oauth !== false &&
+                  !(mcp.headers && Object.keys(mcp.headers).length > 0)
+                ) {
+                  const kyaSupport = yield* Effect.tryPromise(() => detectKyaSupport(key, mcp.url)).pipe(
+                    Effect.orElseSucceed(() => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport),
+                  )
 
-                  if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                    // Default demo behavior: no issuer means we can't mint, and KYA is
-                    // the only sanctioned path, so stop here. Set
-                    // OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through to interactive OAuth.
-                    lastStatus = {
-                      status: "failed" as const,
-                      error:
-                        'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+                  if (kyaSupport.supportsKya) {
+                    // Minting a KYA token to access this server requires explicit
+                    // "Sign in with Skyfire KYA" consent. Without it, gate: surface
+                    // needs_kya_consent and stop. The retry arrives here with
+                    // consented=true once the user confirms in the UI.
+                    if (!consented) {
+                      log.info("[connectRemote] KYA sign-in available; awaiting user consent", { key })
+                      lastStatus = { status: "needs_kya_consent" as const }
+                      return undefined
                     }
-                    return undefined
-                  }
 
-                  const minted = yield* trySilentKya({
-                    name: key,
-                    serverUrl: mcp.url,
-                    auth,
-                    issuer,
-                    sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
-                  })
+                    const cfg = yield* cfgSvc.get()
+                    const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
 
-                  if (minted.minted) {
-                    // Token stored — retry StreamableHTTP once with a fresh transport.
-                    kyaRetried = true
-                    log.info("[connectRemote] kya mint: stored token, retrying StreamableHTTP connect", { key })
-                    return yield* connectTransport(freshStreamable(), connectTimeout).pipe(
-                      Effect.map((client) => ({ client, transportName: name })),
-                      Effect.catch((retryError) => {
-                        const e = retryError instanceof Error ? retryError : new Error(String(retryError))
-                        lastStatus = { status: "failed" as const, error: e.message }
-                        return Effect.succeed(undefined)
-                      }),
-                    )
-                  }
+                    if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+                      // No issuer means we can't mint, and KYA is the only sanctioned
+                      // path. Set OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through
+                      // to interactive OAuth instead.
+                      lastStatus = {
+                        status: "failed" as const,
+                        error:
+                          'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+                      }
+                      return undefined
+                    }
 
-                  if (minted.kyaAdvertised) {
-                    // KYA is advertised but minting failed — surface a clear failure
+                    const minted = yield* trySilentKya({
+                      name: key,
+                      serverUrl: mcp.url,
+                      auth,
+                      issuer,
+                      sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
+                    })
+
+                    if (minted.minted) {
+                      // Token stored — retry StreamableHTTP once with a fresh transport.
+                      kyaRetried = true
+                      log.info("[connectRemote] kya mint: stored token, retrying StreamableHTTP connect", { key })
+                      return yield* connectTransport(freshStreamable(), connectTimeout).pipe(
+                        Effect.map((client) => ({ client, transportName: name })),
+                        Effect.catch((retryError) => {
+                          const e = retryError instanceof Error ? retryError : new Error(String(retryError))
+                          lastStatus = { status: "failed" as const, error: e.message }
+                          return Effect.succeed(undefined)
+                        }),
+                      )
+                    }
+
+                    // Consent given but minting failed — surface a clear failure
                     // rather than silently falling back to interactive OAuth.
                     lastStatus = {
                       status: "failed" as const,
-                      error: "error" in minted ? minted.error : "Silent KYA token minting failed",
+                      error:
+                        "error" in minted && typeof minted.error === "string"
+                          ? minted.error
+                          : "Silent KYA token minting failed",
                     }
                     return undefined
                   }
@@ -857,7 +880,7 @@ export const layer = Layer.effect(
       )
     })
 
-    const create = Effect.fn("MCP.create")(function* (key: string, mcp: ConfigMCP.Info) {
+    const create = Effect.fn("MCP.create")(function* (key: string, mcp: ConfigMCP.Info, consented = false) {
       if (mcp.enabled === false) {
         log.info("[create] mcp server disabled", { key })
         return DISABLED_RESULT
@@ -867,7 +890,7 @@ export const layer = Layer.effect(
 
       const { client: mcpClient, status } =
         mcp.type === "remote"
-          ? yield* connectRemote(key, mcp as ConfigMCP.Info & { type: "remote" })
+          ? yield* connectRemote(key, mcp as ConfigMCP.Info & { type: "remote" }, consented)
           : yield* connectLocal(key, mcp as ConfigMCP.Info & { type: "local" })
 
       if (!mcpClient) {
@@ -1014,9 +1037,13 @@ export const layer = Layer.effect(
       return s.clients
     })
 
-    const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCP.Info) {
+    const createAndStore = Effect.fn("MCP.createAndStore")(function* (
+      name: string,
+      mcp: ConfigMCP.Info,
+      consented = false,
+    ) {
       const s = yield* InstanceState.get(state)
-      const result = yield* create(name, mcp)
+      const result = yield* create(name, mcp, consented)
 
       s.status[name] = result.status
       if (!result.mcpClient) {
@@ -1035,76 +1062,12 @@ export const layer = Layer.effect(
       return { status: s.status }
     })
 
-    const connect = Effect.fn("MCP.connect")(function* (name: string) {
+    const connect = Effect.fn("MCP.connect")(function* (name: string, opts?: { kyaConsent?: boolean }) {
       const mcp = yield* requireMcpConfig(name)
-
-      // Only probe servers that actually use the OAuth path. Skip the KYA issuer
-      // itself (it mints tokens and authenticates via its own headers), servers
-      // authenticated by configured headers (api-key style), and servers that
-      // explicitly opt out of OAuth. For the rest, detect (without minting)
-      // whether the server advertises the Skyfire KYA grant profile; if it does,
-      // gate on explicit user consent and stop. The mint happens only via
-      // confirmKya, never here.
-      if (
-        mcp.type === "remote" &&
-        !hasKyaCapability(mcp) &&
-        !(mcp.headers && Object.keys(mcp.headers).length > 0) &&
-        mcp.oauth !== false
-      ) {
-        const kyaSupport = yield* Effect.tryPromise(() => detectKyaSupport(name, mcp.url)).pipe(
-          Effect.orElseSucceed(() => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport),
-        )
-        if (kyaSupport.supportsKya) {
-          const s = yield* InstanceState.get(state)
-          s.status[name] = { status: "needs_kya_consent" as const }
-          log.info("[connect] KYA sign-in available; awaiting user consent", { name })
-          return
-        }
-      }
-
-      yield* createAndStore(name, { ...mcp, enabled: true })
-    })
-
-    const confirmKya = Effect.fn("MCP.confirmKya")(function* (name: string) {
-      const mcp = yield* requireMcpConfig(name)
-
-      // The user has consented to "Sign in with Skyfire KYA". Run the mint +
-      // token exchange and connect. Mirrors the original connect() preflight.
-      if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
-        const cfg = yield* cfgSvc.get()
-        const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
-
-        const minted = yield* trySilentKya({
-          name,
-          serverUrl: mcp.url,
-          auth,
-          issuer,
-          sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
-        })
-
-        if (minted.kyaAdvertised && !minted.minted) {
-          const s = yield* InstanceState.get(state)
-          const message =
-            "error" in minted && typeof minted.error === "string"
-              ? minted.error
-              : "KYA is advertised by the server but silent token minting failed"
-
-          // KYA is advertised, so interactive OAuth is not the desired path in this demo.
-          // Surface a clear failure and stop here.
-          s.status[name] = { status: "failed" as const, error: message }
-          yield* bus
-            .publish(TuiEvent.ToastShow, {
-              title: "MCP Authentication",
-              message: `Silent KYA auth failed for "${name}": ${message}`,
-              variant: "warning",
-              duration: 10_000,
-            })
-            .pipe(Effect.ignore)
-          return
-        }
-      }
-
-      yield* createAndStore(name, { ...mcp, enabled: true })
+      // KYA detection + consent gating happens in connectRemote at the real 401.
+      // `kyaConsent` carries the user's "Sign in with Skyfire KYA" confirmation:
+      // false → gate (needs_kya_consent); true → mint + connect.
+      yield* createAndStore(name, { ...mcp, enabled: true }, opts?.kyaConsent ?? false)
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -1416,7 +1379,6 @@ export const layer = Layer.effect(
       resources,
       add,
       connect,
-      confirmKya,
       disconnect,
       getPrompt,
       readResource,

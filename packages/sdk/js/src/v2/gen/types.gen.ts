@@ -5311,6 +5311,7 @@ export type McpConnectData = {
   query?: {
     directory?: string
     workspace?: string
+    kyaConsent?: "true" | "false"
   }
   url: "/mcp/{name}/connect"
 }
@@ -5370,40 +5371,6 @@ export type McpDisconnectResponses = {
 }
 
 export type McpDisconnectResponse = McpDisconnectResponses[keyof McpDisconnectResponses]
-
-export type McpKyaConfirmData = {
-  body?: never
-  path: {
-    name: string
-  }
-  query?: {
-    directory?: string
-    workspace?: string
-  }
-  url: "/mcp/{name}/kya/confirm"
-}
-
-export type McpKyaConfirmErrors = {
-  /**
-   * Bad request
-   */
-  400: BadRequestError
-  /**
-   * McpServerNotFoundError
-   */
-  404: McpServerNotFoundError
-}
-
-export type McpKyaConfirmError = McpKyaConfirmErrors[keyof McpKyaConfirmErrors]
-
-export type McpKyaConfirmResponses = {
-  /**
-   * Skyfire KYA sign-in completed
-   */
-  200: McpStatus
-}
-
-export type McpKyaConfirmResponse = McpKyaConfirmResponses[keyof McpKyaConfirmResponses]
 
 export type ProjectListData = {
   body?: never
