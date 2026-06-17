@@ -1038,13 +1038,19 @@ export const layer = Layer.effect(
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
       const mcp = yield* requireMcpConfig(name)
 
-      // The KYA issuer itself authenticates via its configured headers (e.g.
-      // skyfire-api-key), not via the KYA preflight — skip the probe for it.
-      // For every other remote server, detect (without minting) whether it
-      // advertises the Skyfire KYA grant profile. If it does, gate on explicit
-      // user consent: surface needs_kya_consent and stop. The mint happens only
-      // via confirmKya, never here.
-      if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
+      // Only probe servers that actually use the OAuth path. Skip the KYA issuer
+      // itself (it mints tokens and authenticates via its own headers), servers
+      // authenticated by configured headers (api-key style), and servers that
+      // explicitly opt out of OAuth. For the rest, detect (without minting)
+      // whether the server advertises the Skyfire KYA grant profile; if it does,
+      // gate on explicit user consent and stop. The mint happens only via
+      // confirmKya, never here.
+      if (
+        mcp.type === "remote" &&
+        !hasKyaCapability(mcp) &&
+        !(mcp.headers && Object.keys(mcp.headers).length > 0) &&
+        mcp.oauth !== false
+      ) {
         const kyaSupport = yield* Effect.tryPromise(() => detectKyaSupport(name, mcp.url)).pipe(
           Effect.orElseSucceed(() => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport),
         )
