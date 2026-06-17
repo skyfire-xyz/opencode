@@ -36,6 +36,7 @@ export const McpPaths = {
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
   disconnect: "/mcp/:name/disconnect",
+  kyaConfirm: "/mcp/:name/kya/confirm",
 } as const
 
 export const McpApi = HttpApi.make("mcp")
@@ -134,6 +135,19 @@ export const McpApi = HttpApi.make("mcp")
           OpenApi.annotations({
             identifier: "mcp.disconnect",
             description: "Disconnect an MCP server.",
+          }),
+        ),
+        HttpApiEndpoint.post("kyaConfirm", McpPaths.kyaConfirm, {
+          params: { name: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(MCP.Status, "Skyfire KYA sign-in completed"),
+          error: McpServerNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.kya.confirm",
+            summary: "Confirm Skyfire KYA sign-in",
+            description:
+              "Mint and exchange a Skyfire KYA token to connect an MCP server, after the user has consented.",
           }),
         ),
       )
