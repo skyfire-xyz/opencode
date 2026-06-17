@@ -39,11 +39,17 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
   }))
 
   return (
-    <Dialog title={language.t("dialog.kyaConsent.title")} size="normal">
-      <div class="flex flex-col gap-4">
-        <p class="text-14-regular text-text-weak">{language.t("dialog.kyaConsent.body", { name: props.name })}</p>
-        <div class="flex justify-end">
-          <Button variant="primary" onClick={() => confirm.mutate()} disabled={confirm.isPending}>
+    <Dialog
+      title={language.t("dialog.kyaConsent.title")}
+      description={language.t("dialog.kyaConsent.body", { name: props.name })}
+      fit
+    >
+      <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
+        <div class="flex justify-end gap-2">
+          <Button variant="ghost" size="large" onClick={() => dialog.close()} disabled={confirm.isPending}>
+            {language.t("common.cancel")}
+          </Button>
+          <Button variant="primary" size="large" onClick={() => confirm.mutate()} disabled={confirm.isPending}>
             {language.t("dialog.kyaConsent.confirm")}
           </Button>
         </div>
