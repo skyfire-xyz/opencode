@@ -99,6 +99,9 @@ const StatusNeedsClientRegistration = Schema.Struct({
   status: Schema.Literal("needs_client_registration"),
   error: Schema.String,
 }).annotate({ identifier: "MCPStatusNeedsClientRegistration" })
+const StatusNeedsKyaConsent = Schema.Struct({ status: Schema.Literal("needs_kya_consent") }).annotate({
+  identifier: "MCPStatusNeedsKyaConsent",
+})
 const StatusNotConnected = Schema.Struct({ status: Schema.Literal("not_connected") }).annotate({
   identifier: "MCPStatusNotConnected",
 })
@@ -109,6 +112,7 @@ export const Status = Schema.Union([
   StatusFailed,
   StatusNeedsAuth,
   StatusNeedsClientRegistration,
+  StatusNeedsKyaConsent,
   StatusNotConnected,
 ]).annotate({ identifier: "MCPStatus", discriminator: "status" })
 export type Status = Schema.Schema.Type<typeof Status>
@@ -185,6 +189,55 @@ type KyaMintResult =
   | { minted: false; kyaAdvertised: false }
   | { minted: false; kyaAdvertised: true; error: string }
 
+/**
+ * Detect (without minting) whether an MCP server advertises the Skyfire KYA
+ * grant profile, following the RFC 9728 → RFC 8414 discovery chain. Used by
+ * both the consent gate in `connect()` and `trySilentKya`'s mint preflight.
+ */
+async function detectKyaSupport(name: string, serverUrl: string): Promise<KyaSupport> {
+  // B1–B2: probe the MCP endpoint and read the RFC 9728 resource_metadata
+  // pointer from the 401, falling back to the default well-known location.
+  const resourceOrigin = new URL(serverUrl).origin
+  const resourceMetadataUrl =
+    (await probeResourceMetadataUrl(serverUrl)) ??
+    new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
+  log.info("[detectKyaSupport] fetching protected resource metadata", { name, resourceMetadataUrl })
+  const protectedRes = await fetch(resourceMetadataUrl, { headers: { accept: "application/json" } })
+  if (!protectedRes.ok) return { supportsKya: false, authServer: undefined }
+
+  const protectedJson = (await protectedRes.json()) as any
+  // A protected resource may advertise its own Skyfire seller identity so the
+  // KYA token is minted for the right seller without an env override.
+  const sellerServiceId =
+    typeof protectedJson?.seller_service_id === "string" ? (protectedJson.seller_service_id as string) : undefined
+  const authServers =
+    Array.isArray(protectedJson?.authorization_servers) &&
+    protectedJson.authorization_servers.every((x: any) => typeof x === "string")
+      ? (protectedJson.authorization_servers as string[])
+      : []
+  const authServer = authServers[0]
+  if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
+
+  log.info("[detectKyaSupport] fetching AS metadata", { name, authServer })
+  const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+    headers: { accept: "application/json" },
+  })
+  const asJson = rfc8414.ok
+    ? await rfc8414.json()
+    : await fetch(new URL("/.well-known/openid-configuration", authServer), {
+        headers: { accept: "application/json" },
+      }).then((r) => (r.ok ? r.json() : undefined))
+
+  const profiles = authorizationGrantProfilesSupported(asJson)
+  log.info("[detectKyaSupport] AS grant profiles", {
+    name,
+    authServer,
+    supportsKya: profiles.includes("kya"),
+    profiles: profiles.slice(0, 10),
+  })
+  return { supportsKya: profiles.includes("kya"), authServer, sellerServiceId }
+}
+
 function trySilentKya(args: {
   name: string
   serverUrl: string
@@ -212,54 +265,7 @@ function trySilentKya(args: {
     })
 
     const kyaSupport = yield* Effect.tryPromise({
-      try: async (): Promise<KyaSupport> => {
-        // B1–B2: probe the MCP endpoint and read the RFC 9728 resource_metadata
-        // pointer from the 401, falling back to the default well-known location.
-        const resourceOrigin = new URL(args.serverUrl).origin
-        const resourceMetadataUrl =
-          (await probeResourceMetadataUrl(args.serverUrl)) ??
-          new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
-        log.info("[trySilentKya] fetching protected resource metadata", {
-          name: args.name,
-          resourceMetadataUrl,
-        })
-        const protectedRes = await fetch(resourceMetadataUrl, {
-          headers: { accept: "application/json" },
-        })
-        if (!protectedRes.ok) return { supportsKya: false, authServer: undefined }
-
-        const protectedJson = (await protectedRes.json()) as any
-        // A protected resource may advertise its own Skyfire seller identity so
-        // the KYA token is minted for the right seller without an env override.
-        const sellerServiceId =
-          typeof protectedJson?.seller_service_id === "string" ? (protectedJson.seller_service_id as string) : undefined
-        const authServers =
-          Array.isArray(protectedJson?.authorization_servers) &&
-          protectedJson.authorization_servers.every((x: any) => typeof x === "string")
-            ? (protectedJson.authorization_servers as string[])
-            : []
-        const authServer = authServers[0]
-        if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
-
-        log.info("[trySilentKya] fetching AS metadata", { name: args.name, authServer })
-        const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
-          headers: { accept: "application/json" },
-        })
-        const asJson = rfc8414.ok
-          ? await rfc8414.json()
-          : await fetch(new URL("/.well-known/openid-configuration", authServer), {
-              headers: { accept: "application/json" },
-            }).then((r) => (r.ok ? r.json() : undefined))
-
-        const profiles = authorizationGrantProfilesSupported(asJson)
-        log.info("[trySilentKya] AS grant profiles", {
-          name: args.name,
-          authServer,
-          supportsKya: profiles.includes("kya"),
-          profiles: profiles.slice(0, 10),
-        })
-        return { supportsKya: profiles.includes("kya"), authServer, sellerServiceId }
-      },
+      try: () => detectKyaSupport(args.name, args.serverUrl),
       catch: () => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport,
     })
 
@@ -572,6 +578,7 @@ export interface Interface {
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly confirmKya: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -1032,7 +1039,31 @@ export const layer = Layer.effect(
       const mcp = yield* requireMcpConfig(name)
 
       // The KYA issuer itself authenticates via its configured headers (e.g.
-      // skyfire-api-key), not via the KYA preflight — skip the probe/mint for it.
+      // skyfire-api-key), not via the KYA preflight — skip the probe for it.
+      // For every other remote server, detect (without minting) whether it
+      // advertises the Skyfire KYA grant profile. If it does, gate on explicit
+      // user consent: surface needs_kya_consent and stop. The mint happens only
+      // via confirmKya, never here.
+      if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
+        const kyaSupport = yield* Effect.tryPromise(() => detectKyaSupport(name, mcp.url)).pipe(
+          Effect.orElseSucceed(() => ({ supportsKya: false, authServer: undefined }) satisfies KyaSupport),
+        )
+        if (kyaSupport.supportsKya) {
+          const s = yield* InstanceState.get(state)
+          s.status[name] = { status: "needs_kya_consent" as const }
+          log.info("[connect] KYA sign-in available; awaiting user consent", { name })
+          return
+        }
+      }
+
+      yield* createAndStore(name, { ...mcp, enabled: true })
+    })
+
+    const confirmKya = Effect.fn("MCP.confirmKya")(function* (name: string) {
+      const mcp = yield* requireMcpConfig(name)
+
+      // The user has consented to "Sign in with Skyfire KYA". Run the mint +
+      // token exchange and connect. Mirrors the original connect() preflight.
       if (mcp.type === "remote" && !hasKyaCapability(mcp)) {
         const cfg = yield* cfgSvc.get()
         const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
@@ -1379,6 +1410,7 @@ export const layer = Layer.effect(
       resources,
       add,
       connect,
+      confirmKya,
       disconnect,
       getPrompt,
       readResource,
