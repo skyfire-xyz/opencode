@@ -23,7 +23,7 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
   const queryOptions = useQueryOptions()
 
   const confirm = useMutation(() => ({
-    mutationFn: () => sdk.client.mcp.kya.confirm({ name: props.name }),
+    mutationFn: () => sdk.client.mcp.connect({ name: props.name, kyaConsent: "true" }),
     onSuccess: async () => {
       dialog.close()
       await queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory)))
