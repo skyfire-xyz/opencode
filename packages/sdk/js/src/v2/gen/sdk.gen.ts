@@ -2166,7 +2166,7 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.
+   * Connect an MCP server. Pass kyaConsent="true" to confirm a Skyfire KYA sign-in for a server that requires it.
    */
   public connect<ThrowOnError extends boolean = false>(
     parameters: {

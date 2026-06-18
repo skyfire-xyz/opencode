@@ -12,8 +12,9 @@ import { pathKey } from "@/utils/path-key"
 
 // Consent gate for "Sign in with Skyfire KYA". The server has been detected as
 // supporting the Skyfire KYA grant profile (status needs_kya_consent); confirming
-// runs the backend mint + token exchange (confirmKya). Cancelling — the X, Esc, or
-// click-away provided by the dialog shell — does nothing, so no token is minted.
+// re-runs connect with kyaConsent=true, which mints + exchanges the token and
+// connects. Cancelling — the X, Esc, or click-away provided by the dialog shell —
+// does nothing, so no token is minted.
 export const DialogKyaConsent: Component<{ name: string }> = (props) => {
   const sdk = useSDK()
   const sync = useSync()
