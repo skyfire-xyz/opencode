@@ -39,7 +39,10 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
     },
   }))
 
-  const merchantName = () => props.name.charAt(0).toUpperCase() + props.name.slice(1)
+  // Capitalize the first letter of each word (split on - _ space) for display,
+  // preserving separators and any uppercase the server key already carries — so
+  // "xyz-clothiers" → "Xyz-Clothiers" and "XYZ-Clothiers" stays "XYZ-Clothiers".
+  const merchantName = () => props.name.replace(/(^|[-_\s])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())
 
   return (
     <Dialog title={language.t("dialog.kyaConsent.title", { name: merchantName() })} fit>

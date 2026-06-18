@@ -3,7 +3,7 @@
   "mcp": {
     // Protected merchant — connecting triggers a 401 + KYA auth handshake.
     // Start it first: `cd merchant-mcp && npm install && npm start`.
-    "merchant": {
+    "XYZ-Clothiers": {
       "type": "remote",
       "enabled": true,
       "url": "http://127.0.0.1:8787/mcp",
@@ -23,7 +23,7 @@
         },
       },
       "headers": {
-        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}"
       },
     },
   },
