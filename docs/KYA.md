@@ -7,7 +7,12 @@ This doc describes how OpenCode authenticates to a **mock MCP server** using a *
 
 OpenCode does **not** call Skyfire's REST APIs directly.
 
-It also includes instructions to run the full flow locally.
+It also includes instructions to run the full flow locally — via the **CLI**, the
+**web app**, and the **desktop app**.
+
+> This is the hands-on runbook. For the design/architecture reference (data
+> structures, decision matrix, code-path walkthrough, security model), see
+> [KYA-TECH-SPEC.md](KYA-TECH-SPEC.md).
 
 ---
 
@@ -52,18 +57,26 @@ When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
   whose `capabilities` map includes `org.kyapay:kya` (the server's name is irrelevant;
   the example below uses `skyfire`) — and calls the configured tool, e.g.
   `tools/call { name: "create-kya-token", arguments: <seller-selector> }`.
-- The seller selector is one of:
-  - `{ sellerServiceId: "<UUID>" }` — used when `OPENCODE_KYA_SELLER_SERVICE_ID` is exported.
-  - `{ sellerDomainOrUrl: "<host>" }` — used otherwise, derived from the target MCP server URL.
-    For a localhost target the host is substituted with `mcp-server.com`.
+- The seller selector is one of (highest precedence first):
+  - `{ sellerServiceId: "<UUID>" }` — from `OPENCODE_KYA_SELLER_SERVICE_ID` when exported.
+  - `{ sellerServiceId: "<UUID>" }` — from a `seller_service_id` advertised by the
+    target's protected-resource metadata, when present.
+  - `{ sellerDomainOrUrl: "<host>" }` — otherwise, derived from the target MCP server URL.
+    For a localhost/private target the host is substituted with `mcp-server.com`.
 - Skyfire returns a **KYA JWT assertion** (not an OAuth access token).
 
 5. **Exchange assertion for an OAuth access token (JWT-bearer)**
 
-- OpenCode POSTs to the mock OAuth token endpoint (`http://127.0.0.1:8788/token`) with:
+- OpenCode POSTs (`application/x-www-form-urlencoded`) to the mock OAuth token
+  endpoint (`http://127.0.0.1:8788/token`) with **only** these two fields:
   - `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer`
   - `assertion=<kya_jwt>`
-- Mock OAuth returns `{ access_token, token_type, ... }`.
+- The exchange sends **no** `client_id`/`client_secret`, no `Authorization`
+  header, and **no `scope`** — all trust comes from the issuer-signed assertion,
+  which the AS validates (signature via JWKS, `iss`, `exp`, and `jti` replay).
+- Mock OAuth returns `{ access_token, token_type, expires_in, scope }`. OpenCode
+  keeps **only `access_token`** for the silent path — `expires_in`, `scope`, and
+  any `refresh_token` are discarded (see "Token lifetime" below).
 
 6. **Retry MCP with Bearer access token**
    - OpenCode retries:
@@ -84,6 +97,24 @@ the standard interactive Authorization Code + PKCE flow in that case.
 If the server does **not** advertise KYA, OpenCode always falls back to the
 interactive flow regardless of that flag (KYA is purely an opt-in optimization
 keyed on the AS metadata, per spec §5.5).
+
+### Token lifetime (no local expiry, no refresh)
+
+Because the silent path stores only the access token (no `expiresAt`), a
+KYA-minted token shows as **`authenticated` indefinitely** in `opencode mcp list`
+/ the UI — OpenCode does **not** re-mint on a timer. A fresh mint happens only
+when the MCP server **rejects the stale token with a 401**, which re-enters the
+connect flow. There is no refresh-token path for KYA; "refresh" is always a full
+re-mint via the issuer. To force a clean re-mint, clear stored auth:
+
+```sh
+rm ~/.local/share/opencode/mcp-auth.json
+```
+
+> The exchange is implemented twice: inline in the silent connect path and as a
+> standalone helper used by `opencode mcp debug` (see
+> [KYA-TECH-SPEC.md](KYA-TECH-SPEC.md) §7.5). They share no code — keep both in
+> sync if you change the exchange contract.
 
 ---
 
@@ -242,17 +273,22 @@ Notes:
 
 The Skyfire `create-kya-token` MCP tool needs exactly one seller selector
 (see [Skyfire create-token docs](https://docs.skyfire.xyz/reference/create-token)).
-OpenCode supports both, with the following precedence:
+OpenCode resolves it with the following precedence:
 
-1. **`sellerServiceId`** — explicit override via environment variable. If set,
-   OpenCode passes it directly to the tool:
+1. **`sellerServiceId` (env override)** — explicit override via environment
+   variable. If set, OpenCode passes it directly to the tool:
 
    ```bash
    export OPENCODE_KYA_SELLER_SERVICE_ID="662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
    ```
 
-2. **`sellerDomainOrUrl`** — derived from the **target MCP server's URL** when
-   the env var above is unset:
+2. **`sellerServiceId` (advertised)** — if the env var is unset but the target's
+   protected-resource metadata advertises a `seller_service_id`, OpenCode uses
+   that. This lets a resource bind itself to the right Skyfire seller without an
+   env override.
+
+3. **`sellerDomainOrUrl`** — derived from the **target MCP server's URL** when
+   neither of the above applies:
    - For a public MCP server like `https://mcp.example.com/mcp`, the seller is
      `mcp.example.com`.
    - For a localhost/loopback target (e.g. the mock at
@@ -270,6 +306,9 @@ Security note: do **not** commit API keys into the repo.
 
 ### 5) Start OpenCode instance server
 
+Needed for the **CLI** and **web app** frontends. The **desktop app** spawns its
+own embedded server, so desktop-only users can skip this step (see step 6).
+
 From `packages/opencode`:
 
 ```bash
@@ -279,9 +318,20 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 ---
 
-### 6) Connect via the web UI or via API
+### 6) Connect via a frontend
 
-#### Web UI
+You can drive the connect/auth flow from any of three frontends. All of them
+ultimately issue the same `POST /mcp/<name>/connect` against an instance server
+and trigger the KYA preflight — they differ only in how the instance server is
+provided and where the interactive browser step (if any) lands.
+
+| Frontend | Instance server | Best for |
+| --- | --- | --- |
+| **CLI** (`opencode mcp …`) | the one you started in step 5 | scripting, full DEBUG logs, the interactive `mcp auth` flow |
+| **Web app** (`packages/app`) | a **separate** server you run (step 5 / `demo:kya`) | browser UI during local dev |
+| **Desktop app** (`packages/desktop`) | an **embedded** server it spawns itself (sidecar) | a one-process, app-like experience |
+
+#### Web app
 
 The web frontend (`packages/app`, a SolidJS + Vite app) runs separately from the
 instance server and talks to it over HTTP.
@@ -297,8 +347,9 @@ instance server and talks to it over HTTP.
    It serves on **`http://localhost:3000`**.
 
 3. By default the frontend connects to the instance server at
-   `http://localhost:4096`. If your server runs elsewhere, override it before
-   starting Vite:
+   `http://localhost:4096` (via `VITE_OPENCODE_SERVER_HOST`/`VITE_OPENCODE_SERVER_PORT`,
+   see [packages/app/src/entry.tsx](../packages/app/src/entry.tsx#L105)). If your
+   server runs elsewhere, override it before starting Vite:
 
    ```bash
    VITE_OPENCODE_SERVER_HOST=localhost VITE_OPENCODE_SERVER_PORT=4096 bun run dev:web
@@ -306,21 +357,57 @@ instance server and talks to it over HTTP.
 
 4. Open `http://localhost:3000`, select the project directory you started the
    server against, then open the MCP dialog and connect `merchant-mcp`. This
-   issues `POST /mcp/merchant-mcp/connect` against the instance server — the same
-   entry point as the HTTP API below — and triggers the KYA preflight.
+   issues `POST /mcp/merchant-mcp/connect` against the instance server and
+   triggers the KYA preflight.
 
 For a server already showing `needs_auth`, clicking it in the MCP dialog (or the
 status popover) calls `mcp.auth.authenticate`, which drives the **interactive**
 OAuth flow — it opens the browser on the **server** host and waits for the
 loopback callback.
 
-> Note: the silent KYA flow is fully non-interactive, so it works over a remote
-> frontend. The interactive flow, however, opens the browser on the server host
-> and redirects to a loopback callback there (`http://127.0.0.1:19876/...`), so it
-> only completes when the browser and instance server share a machine (i.e. local
-> dev) unless a custom `oauth.redirectUri` is configured. For a truly remote web
-> app the split `mcp.auth.start` → open-in-user-browser → `mcp.auth.callback` flow
-> (with an app-hosted redirect) would be required.
+> Note: the silent KYA flow is fully non-interactive, so it works even when the
+> frontend is remote. The interactive flow, however, opens the browser on the
+> server host and redirects to a loopback callback there (`http://127.0.0.1:19876/...`),
+> so it only completes when the browser and instance server share a machine (i.e.
+> local dev) unless a custom `oauth.redirectUri` is configured. For a truly remote
+> web app the split `mcp.auth.start` → open-in-user-browser → `mcp.auth.callback`
+> flow (with an app-hosted redirect) would be required.
+
+#### Desktop app
+
+The desktop frontend (`packages/desktop`) is an **Electron** app. Unlike the web
+app, it does **not** need a separately-started instance server — by default it
+**spawns its own embedded OpenCode server** as a sidecar
+([packages/desktop/src/main/server.ts](../packages/desktop/src/main/server.ts)),
+so the server and the browser surface always share the same machine. That means
+**both** the silent KYA flow and the interactive loopback callback work out of
+the box.
+
+1. Keep the mock MCP + OAuth servers from step 2 running (the desktop app
+   provides the *instance* server, but not the mock *resource*/*AS*).
+2. Make sure your project's `.opencode/opencode.jsonc` is configured as in step 3.
+3. From the repo root, start the desktop app:
+
+   ```bash
+   bun run dev:desktop
+   # equivalently: bun --cwd packages/desktop dev
+   ```
+
+   The `predev` step builds the embedded Node server
+   ([packages/desktop/scripts/predev.ts](../packages/desktop/scripts/predev.ts)),
+   then `electron-vite dev` launches the app window.
+
+4. In the app, open the project directory you configured, open the MCP dialog,
+   and connect `merchant-mcp`. The MCP dialog and status popover behave exactly
+   as in the web app (`connect` for a fresh server, `mcp.auth.authenticate` for
+   one showing `needs_auth`).
+
+> **Pointing the desktop app at an external server (optional).** If you want the
+> desktop UI but also the verbose `--print-logs` output from a server you control,
+> run the `demo:kya` server (or step 5's server) and set the desktop app's default
+> server URL to `http://localhost:4096` from within the app's settings (stored via
+> `setDefaultServerUrl`). When a default server URL is set, the app uses it instead
+> of spawning the embedded sidecar.
 
 #### HTTP API
 
