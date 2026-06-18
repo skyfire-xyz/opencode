@@ -1134,6 +1134,11 @@ export type McpLocalConfig = {
   }
   enabled?: boolean
   timeout?: number
+  capabilities?: {
+    [key: string]: {
+      tool: string
+    }
+  }
 }
 
 export type McpOAuthConfig = {
@@ -1142,6 +1147,10 @@ export type McpOAuthConfig = {
   scope?: string
   callbackPort?: number
   redirectUri?: string
+}
+
+export type McpCapabilityConfig = {
+  tool?: string
 }
 
 export type McpRemoteConfig = {
@@ -1153,6 +1162,7 @@ export type McpRemoteConfig = {
    * URL of the remote MCP server
    */
   url: string
+  transport?: "streamable_http" | "sse"
   enabled?: boolean
   headers?: {
     [key: string]: string
@@ -1162,6 +1172,14 @@ export type McpRemoteConfig = {
    */
   oauth?: McpOAuthConfig | false
   timeout?: number
+  /**
+   * Capabilities supported by this MCP server
+   */
+  capabilities?:
+    | {
+        [key: string]: McpCapabilityConfig
+      }
+    | Array<string>
 }
 
 /**
@@ -1687,12 +1705,22 @@ export type McpStatusNeedsClientRegistration = {
   error: string
 }
 
+export type McpStatusNeedsKyaConsent = {
+  status: "needs_kya_consent"
+}
+
+export type McpStatusNotConnected = {
+  status: "not_connected"
+}
+
 export type McpStatus =
   | McpStatusConnected
   | McpStatusDisabled
   | McpStatusFailed
   | McpStatusNeedsAuth
   | McpStatusNeedsClientRegistration
+  | McpStatusNeedsKyaConsent
+  | McpStatusNotConnected
 
 export type McpUnsupportedOAuthError = {
   error: string
@@ -5283,6 +5311,7 @@ export type McpConnectData = {
   query?: {
     directory?: string
     workspace?: string
+    kyaConsent?: "true" | "false"
   }
   url: "/mcp/{name}/connect"
 }

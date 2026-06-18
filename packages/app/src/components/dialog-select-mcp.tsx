@@ -3,23 +3,27 @@ import { Component, createMemo, Show } from "solid-js"
 import { useSync } from "@/context/sync"
 import { useSDK } from "@/context/sdk"
 import { Dialog } from "@opencode-ai/ui/dialog"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { List } from "@opencode-ai/ui/list"
 import { Switch } from "@opencode-ai/ui/switch"
 import { useLanguage } from "@/context/language"
 import { useQueryOptions } from "@/context/server-sync"
 import { pathKey } from "@/utils/path-key"
+import { DialogKyaConsent } from "./dialog-kya-consent"
 
 const statusLabels = {
   connected: "mcp.status.connected",
   failed: "mcp.status.failed",
   needs_auth: "mcp.status.needs_auth",
   needs_client_registration: "mcp.status.needs_client_registration",
+  needs_kya_consent: "mcp.status.needs_kya_consent",
   disabled: "mcp.status.disabled",
 } as const
 
 export const DialogSelectMcp: Component = () => {
   const sync = useSync()
   const sdk = useSDK()
+  const dialog = useDialog()
   const language = useLanguage()
   const queryClient = useQueryClient()
   const queryOptions = useQueryOptions()
@@ -47,7 +51,12 @@ export const DialogSelectMcp: Component = () => {
       }
       await sdk.client.mcp.connect({ name })
     },
-    onSuccess: () => queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory))),
+    onSuccess: async (_data, name) => {
+      await queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory)))
+      if (sync.data.mcp[name]?.status === "needs_kya_consent") {
+        dialog.show(() => <DialogKyaConsent name={name} />)
+      }
+    },
   }))
 
   const enabledCount = createMemo(() => items().filter((i) => i.status === "connected").length)

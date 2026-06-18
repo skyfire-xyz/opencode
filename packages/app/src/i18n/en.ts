@@ -300,12 +300,18 @@ export const dict = {
   "dialog.mcp.description": "{{enabled}} of {{total}} enabled",
   "dialog.mcp.empty": "No MCPs configured",
 
+  "dialog.kyaConsent.title": "Sign in with Skyfire KYA?",
+  "dialog.kyaConsent.body":
+    "Use Skyfire to sign in to {{name}}? Skyfire will be used to authenticate and authorize access to this server.",
+  "dialog.kyaConsent.confirm": "Confirm",
+
   "dialog.lsp.empty": "LSPs auto-detected from file types",
   "dialog.plugins.empty": "Plugins configured in opencode.json",
 
   "mcp.status.connected": "connected",
   "mcp.status.failed": "failed",
   "mcp.status.needs_auth": "needs auth",
+  "mcp.status.needs_kya_consent": "sign-in required",
   "mcp.status.disabled": "disabled",
   "mcp.auth.clickToAuthenticate": "Click to authenticate",
 
