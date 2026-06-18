@@ -58,7 +58,7 @@ const SELLER_SERVICE_ID = "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
 // find-sellers if SELLER_SERVICE_ID is not a valid network id.
 const SELLER_SEARCH_HINT = "Clothing and apparel merchant"
 const TAX_RATE = 0.08
-const SHIPPING_FLAT = 0.001
+const SHIPPING_FLAT = 0.0002
 
 // Round to 6 decimal places so sub-cent prices don't collapse to $0.00.
 const r6 = (n) => Math.round(n * 1e6) / 1e6
