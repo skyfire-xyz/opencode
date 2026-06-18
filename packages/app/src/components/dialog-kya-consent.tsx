@@ -39,19 +39,20 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
     },
   }))
 
+  // Capitalize the first letter of each word (split on - _ space) for display,
+  // preserving separators and any uppercase the server key already carries — so
+  // "xyz-clothiers" → "Xyz-Clothiers" and "XYZ-Clothiers" stays "XYZ-Clothiers".
+  const merchantName = () => props.name.replace(/(^|[-_\s])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())
+
   return (
-    <Dialog
-      title={language.t("dialog.kyaConsent.title")}
-      description={language.t("dialog.kyaConsent.body", { name: props.name })}
-      fit
-    >
+    <Dialog title={language.t("dialog.kyaConsent.title", { name: merchantName() })} fit>
       <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
         <div class="flex justify-end gap-2">
           <Button variant="ghost" size="large" onClick={() => dialog.close()} disabled={confirm.isPending}>
-            {language.t("common.cancel")}
+            {language.t("dialog.kyaConsent.no")}
           </Button>
           <Button variant="primary" size="large" onClick={() => confirm.mutate()} disabled={confirm.isPending}>
-            {language.t("dialog.kyaConsent.confirm")}
+            {language.t("dialog.kyaConsent.yes")}
           </Button>
         </div>
       </div>
