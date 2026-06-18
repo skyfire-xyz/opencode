@@ -436,7 +436,9 @@ function trySilentKya(args: {
           : ({ minted: false, kyaAdvertised: false } satisfies KyaMintResult),
       )
     }),
-    Effect.tap((result) => Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result }))),
+    Effect.tap((result) =>
+      Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result })),
+    ),
   )
 }
 
@@ -449,7 +451,10 @@ function listTools(key: string, client: MCPClient, timeout: number) {
     Effect.catch((error) => {
       if (!isOutputSchemaValidationError(error)) return Effect.fail(error)
 
-      log.warn("[listTools] failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
+      log.warn("[listTools] failed to validate MCP tool output schemas, retrying without output schema validation", {
+        key,
+        error,
+      })
       return Effect.tryPromise({
         try: () =>
           client.request({ method: "tools/list" }, TolerantListToolsResultSchema, {
@@ -957,7 +962,7 @@ export const layer = Layer.effect(
 
         // We intentionally don't eagerly connect MCP servers here. Connections
         // (and any KYA auth they trigger) happen on-demand via MCP.connect when
-        // the user enables a server in the UI — matching SKYK-1791's behavior.
+        // the user enables a server in the UI.
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -1285,7 +1290,11 @@ export const layer = Layer.effect(
         return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
       }
 
-      log.info("[authenticate] opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
+      log.info("[authenticate] opening browser for oauth", {
+        mcpName,
+        url: result.authorizationUrl,
+        state: result.oauthState,
+      })
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
 
