@@ -15,24 +15,6 @@
 </style></head>
 <body>
 <h1>KYA + OAuth + MCP Integration — Technical Specification</h1>
-<blockquote>
-<p><strong>Confluence-portable copy.</strong> Same content as <code>docs/KYA-TECH-SPEC.md</code> with the
-repo-relative <code>file:line</code> links flattened to plain code references (e.g.
-<code>index.ts:188-437</code>), since those don&#39;t resolve outside the repository.</p>
-<p><strong>Importing into Confluence — two options:</strong></p>
-<ol>
-<li><strong>HTML paste (most reliable, recommended).</strong> Open the rendered
-<code>docs/KYA-TECH-SPEC.confluence.html</code> in a browser, select all (⌘A), copy, and
-paste into the Confluence editor. Headings, tables, code blocks, and lists
-are preserved across Confluence Cloud / Server / DC.</li>
-<li><strong>Markdown markup dialog.</strong> Confluence has <strong>no <code>/Markdown</code> slash command.</strong>
-Use the markup importer instead: editor toolbar <strong><code>+</code> (Insert) → ⋯ More →
-Markup</strong> (Cloud) or <strong>Insert → Markup</strong> (Server/DC), then set the dropdown to
-<strong>Markdown</strong>, paste this file&#39;s contents, and click <strong>Insert</strong>. (Some Cloud
-instances also expose it as the <strong><code>/markup</code></strong> slash command.)</li>
-</ol>
-<p>Either way, the Mermaid diagram in §16 needs a Mermaid macro — see the note there.</p>
-</blockquote>
 <p><strong>Status:</strong> Implemented
 <strong>Audience:</strong> Engineers working on OpenCode&#39;s MCP transport, auth, and payment-gateway layers.
 <strong>Scope:</strong> How OpenCode authenticates to protected MCP servers using the KYA
@@ -889,13 +871,6 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 </ul>
 <hr>
 <h2>16. End-to-End Sequence</h2>
-<blockquote>
-<p><strong>Rendering in Confluence:</strong> Confluence does not render fenced <code>```mermaid</code>
-blocks natively. Either (a) install/use a **Mermaid diagram macro** (e.g.
-&quot;Mermaid Diagrams for Confluence&quot;) and paste the code below into it, or (b)
-render it to an image (e.g. <a href="https://mermaid.live">https://mermaid.live</a>) and attach the PNG. The
-repo also ships a pre-rendered <code>docs/kya+oauth+sequence+diagram.png</code>.</p>
-</blockquote>
 <pre><code class="language-mermaid">sequenceDiagram
     autonumber
     participant A as Agent (OpenCode)
