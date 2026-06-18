@@ -256,6 +256,9 @@ export const McpListCommand = effectCmd({
         statusIcon = "✗"
         statusText = "needs client registration"
         hint = "\n    " + status.error
+      } else if (status.status === "needs_kya_consent") {
+        statusIcon = "⚠"
+        statusText = "needs Skyfire sign-in"
       } else {
         statusIcon = "✗"
         statusText = "failed"

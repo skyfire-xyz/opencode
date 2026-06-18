@@ -9,6 +9,7 @@ import { useNavigate } from "@solidjs/router"
 import { type Accessor, createEffect, createMemo, For, type JSXElement, onCleanup, Show } from "solid-js"
 import { createStore } from "solid-js/store"
 import { ServerHealthIndicator, ServerRow } from "@/components/server/server-row"
+import { DialogKyaConsent } from "@/components/dialog-kya-consent"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useSDK } from "@/context/sdk"
@@ -105,6 +106,7 @@ const useDefaultServerKey = (
 const useMcpToggleMutation = () => {
   const sync = useSync()
   const sdk = useSDK()
+  const dialog = useDialog()
   const language = useLanguage()
   const queryClient = useQueryClient()
   const queryOptions = useQueryOptions()
@@ -124,7 +126,12 @@ const useMcpToggleMutation = () => {
       }
       await sdk.client.mcp.connect({ name })
     },
-    onSuccess: () => queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory))),
+    onSuccess: async (_data, name) => {
+      await queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory)))
+      if (sync.data.mcp[name]?.status === "needs_kya_consent") {
+        dialog.show(() => <DialogKyaConsent name={name} />)
+      }
+    },
     onError: (err) => {
       showToast({
         variant: "error",
@@ -453,7 +460,9 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                             "bg-icon-critical-base": status() === "failed",
                             "bg-border-weak-base": status() === "disabled",
                             "bg-icon-warning-base":
-                              status() === "needs_auth" || status() === "needs_client_registration",
+                              status() === "needs_auth" ||
+                              status() === "needs_client_registration" ||
+                              status() === "needs_kya_consent",
                           }}
                         />
                         <span class="flex flex-col min-w-0 flex-1">
@@ -463,6 +472,11 @@ export function StatusPopoverBody(props: { shown: Accessor<boolean> }) {
                           <Show when={status() === "needs_auth"}>
                             <span class="text-11-regular text-text-weaker truncate">
                               {language.t("mcp.auth.clickToAuthenticate")}
+                            </span>
+                          </Show>
+                          <Show when={status() === "needs_kya_consent"}>
+                            <span class="text-11-regular text-text-weaker truncate">
+                              {language.t("mcp.status.needs_kya_consent")}
                             </span>
                           </Show>
                         </span>

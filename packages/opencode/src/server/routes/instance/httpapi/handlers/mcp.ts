@@ -75,9 +75,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return { success: true as const }
     })
 
-    const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: { params: { name: string } }) {
+    const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: {
+      params: { name: string }
+      query: { kyaConsent?: boolean }
+    }) {
       yield* mcp
-        .connect(ctx.params.name)
+        .connect(ctx.params.name, { kyaConsent: ctx.query.kyaConsent })
         .pipe(
           Effect.catchTag("MCP.NotFoundError", (error) =>
             Effect.fail(

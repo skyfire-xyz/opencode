@@ -2166,13 +2166,14 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Connect an MCP server.
+   * Connect an MCP server. Pass kyaConsent="true" to confirm a Skyfire KYA sign-in for a server that requires it.
    */
   public connect<ThrowOnError extends boolean = false>(
     parameters: {
       name: string
       directory?: string
       workspace?: string
+      kyaConsent?: "true" | "false"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2184,6 +2185,7 @@ export class Mcp extends HeyApiClient {
             { in: "path", key: "name" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { in: "query", key: "kyaConsent" },
           ],
         },
       ],
