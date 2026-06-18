@@ -62,6 +62,14 @@ const SHIPPING_FLAT = 0.001
 
 // Round to 6 decimal places so sub-cent prices don't collapse to $0.00.
 const r6 = (n) => Math.round(n * 1e6) / 1e6
+// Display multiplier: internal prices are in small units (0.001, 0.002, etc),
+// multiply by this factor when displaying to users (e.g., 0.001 * 10000 = $10.00)
+const DISPLAY_MULTIPLIER = 10000
+const formatPrice = (internalPrice) => `$${(internalPrice * DISPLAY_MULTIPLIER).toFixed(2)}`
+const formatProductForDisplay = (product) => ({
+  ...product,
+  price: formatPrice(product.price),
+})
 const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:coin"]
 
 const CATALOG = [
@@ -276,11 +284,15 @@ function callMerchantTool(name, args, meta) {
     const results = q
       ? CATALOG.filter((p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))
       : CATALOG
+    const displayResults = results.map(formatProductForDisplay)
     return {
       content: [
         {
           type: "text",
-          text: results.length > 0 ? JSON.stringify(results, null, 2) : `No products found matching "${args.query}".`,
+          text:
+            displayResults.length > 0
+              ? JSON.stringify(displayResults, null, 2)
+              : `No products found matching "${args.query}".`,
         },
       ],
     }
@@ -289,7 +301,7 @@ function callMerchantTool(name, args, meta) {
   if (name === "product-details") {
     const product = CATALOG.find((p) => p.id === args.product_id)
     if (!product) return { content: [{ type: "text", text: `Unknown product: ${args.product_id}` }], isError: true }
-    return { content: [{ type: "text", text: JSON.stringify(product, null, 2) }] }
+    return { content: [{ type: "text", text: JSON.stringify(formatProductForDisplay(product), null, 2) }] }
   }
 
   if (name === "add-to-cart") {
@@ -305,11 +317,12 @@ function callMerchantTool(name, args, meta) {
     if (existing) existing.quantity += quantity
     else cart.push({ product_id: args.product_id, name: product.name, price: product.price, quantity })
 
+    const cartDisplay = cart.map((item) => `  - ${item.quantity}x ${item.name} @ ${formatPrice(item.price)}`).join("\n")
     return {
       content: [
         {
           type: "text",
-          text: `Added ${quantity}x "${product.name}" to cart (${cartId}).\n\nCart contents:\n${JSON.stringify(cart, null, 2)}`,
+          text: `Added ${quantity}x "${product.name}" to cart (${cartId}).\n\nCart contents:\n${cartDisplay}`,
         },
       ],
     }
@@ -323,7 +336,7 @@ function callMerchantTool(name, args, meta) {
     const subTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const taxes = r6(subTotal * TAX_RATE)
     const total = r6(subTotal + taxes + SHIPPING_FLAT)
-    const items = cart.map((item) => `  - ${item.quantity}x ${item.name} @ $${item.price}`).join("\n")
+    const items = cart.map((item) => `  - ${item.quantity}x ${item.name} @ ${formatPrice(item.price)}`).join("\n")
     // Quote only — deliberately a normal (non-error) result with NO payments/*
     // signal. Emitting the signal here would make the gateway mint a PAY token at
     // checkout, i.e. authorize payment before the user confirms. Settlement is the
@@ -335,10 +348,10 @@ function callMerchantTool(name, args, meta) {
           text: [
             `Order summary:`,
             items,
-            `  Subtotal: $${subTotal}`,
-            `  Taxes: $${taxes}`,
-            `  Shipping: $${SHIPPING_FLAT}`,
-            `  Total: $${total}`,
+            `  Subtotal: ${formatPrice(subTotal)}`,
+            `  Taxes: ${formatPrice(taxes)}`,
+            `  Shipping: ${formatPrice(SHIPPING_FLAT)}`,
+            `  Total: ${formatPrice(total)}`,
             ``,
             `Confirm these details with the user, then call \`pay\` to complete the purchase.`,
           ].join("\n"),
@@ -363,7 +376,7 @@ function callMerchantTool(name, args, meta) {
       const taxes = r6(subTotal * TAX_RATE)
       const total = r6(subTotal + taxes + SHIPPING_FLAT)
       return {
-        content: [{ type: "text", text: `Payment Required: $${total}` }],
+        content: [{ type: "text", text: `Payment Required: ${formatPrice(total)}` }],
         isError: true,
         _meta: paymentSignal(total, subTotal, taxes),
       }
@@ -382,7 +395,7 @@ function callMerchantTool(name, args, meta) {
 
     carts.delete(cartId)
     const orderId = `ORD-${++orderSeq}`
-    const items = cart.map((item) => `  - ${item.quantity}x ${item.name} @ $${item.price}`).join("\n")
+    const items = cart.map((item) => `  - ${item.quantity}x ${item.name} @ ${formatPrice(item.price)}`).join("\n")
     const shippingAddress = args.shipping_address ?? "123 Demo St, San Francisco, CA 94102"
 
     return {
@@ -394,10 +407,10 @@ function callMerchantTool(name, args, meta) {
             `  Order ID: ${orderId}`,
             `  Items:`,
             items,
-            `  Subtotal: $${subTotal}`,
-            `  Taxes: $${taxes}`,
-            `  Shipping: $${SHIPPING_FLAT}`,
-            `  Total: $${total}`,
+            `  Subtotal: ${formatPrice(subTotal)}`,
+            `  Taxes: ${formatPrice(taxes)}`,
+            `  Shipping: ${formatPrice(SHIPPING_FLAT)}`,
+            `  Total: ${formatPrice(total)}`,
             `  Payment: Confirmed`,
             `  Shipping to: ${shippingAddress}`,
             `  Status: PAID`,
