@@ -15,17 +15,16 @@
 </style></head>
 <body>
 <h1>KYA + OAuth + MCP Integration — Technical Specification</h1>
-<p><strong>Status:</strong> Implemented
-<strong>Audience:</strong> Engineers working on OpenCode&#39;s MCP transport, auth, and payment-gateway layers.
-<strong>Scope:</strong> How OpenCode authenticates to protected MCP servers using the KYA
-(Know Your Agent) grant profile, how it falls back to interactive OAuth, how the
-payment gateway (<code>org.kyapay:pay</code>) reuses the same capability machinery, and the
-exact code paths, data structures, and network exchanges involved.</p>
+<p>How OpenCode authenticates to protected MCP servers with the KYA (Know Your
+Agent) grant profile, when it falls back to interactive OAuth, and how the
+payment gateway (<code>org.kyapay:pay</code>) reuses the same capability machinery. It
+covers the code paths, data structures, and network exchanges involved, for
+engineers working on the MCP transport, auth, and gateway layers.</p>
 <blockquote>
-<p>This document is the design/architecture reference. For a hands-on runbook
-(how to start the mock servers, connect from the web UI, read the logs), see
-<code>KYA.md</code>. Where the two overlap, this spec is authoritative on
-<em>behavior</em> and KYA.md is authoritative on <em>operation</em>.</p>
+<p>This is the design reference. For a hands-on runbook (starting the mock
+servers, connecting from the web UI, reading the logs), see <code>KYA.md</code>.
+Where the two overlap, this doc is authoritative on behavior and KYA.md on
+operation.</p>
 </blockquote>
 <hr>
 <h2>1. Purpose &amp; Background</h2>
@@ -388,13 +387,13 @@ returns a <code>KyaMintResult</code>:</p>
   | { minted: false; kyaAdvertised: false }                // KYA not advertised → caller may fall back
   | { minted: false; kyaAdvertised: true; error: string }  // KYA advertised but minting failed → hard fail
 </code></pre>
-<p>The <code>kyaAdvertised</code> flag is the linchpin of the gating logic (§9): it tells the
-caller whether a failure should hard-fail or fall through to interactive OAuth.</p>
+<p>The <code>kyaAdvertised</code> flag drives the gating logic (§9): it tells the caller
+whether a failure should hard-fail or fall through to interactive OAuth.</p>
 <h3>7.1 Issuer self-exclusion</h3>
 <p>Before any KYA work, callers check <code>!hasKyaCapability(mcp)</code>. The issuer
 authenticates via its own configured headers (<code>skyfire-api-key</code>), so it must
-never be put through the KYA preflight — otherwise OpenCode would try to mint a
-KYA token <em>in order to talk to the KYA minter</em>, a chicken-and-egg deadlock. See
+never be put through the KYA preflight. Otherwise OpenCode would try to mint a
+KYA token just to reach the KYA minter, a chicken-and-egg deadlock. See
 <code>connect</code> and
 <code>connectRemote</code>.</p>
 <h3>7.2 Phase B — Discovery &amp; advertisement gate</h3>
@@ -478,11 +477,11 @@ returns a human-readable string like
 <code>token_endpoint</code> → error result.</p>
 <blockquote>
 <p><strong>Why re-fetch?</strong> Phase B (§7.2) already fetched the same AS metadata, but it
-only kept <code>supportsKya</code> and the <code>authServer</code> origin from it — not the
-<code>token_endpoint</code>. Phase D therefore re-fetches <code>&lt;authServer&gt;/.well-known/oauth-authorization-server</code>
-to read <code>token_endpoint</code>. This is a redundant round-trip (the two phases don&#39;t
-share the parsed metadata object); it&#39;s correctness-neutral but worth knowing
-if you&#39;re optimizing or tracing network calls.</p>
+only kept <code>supportsKya</code> and the <code>authServer</code> origin from it, not the
+<code>token_endpoint</code>. Phase D re-fetches <code>&lt;authServer&gt;/.well-known/oauth-authorization-server</code>
+to read <code>token_endpoint</code>. The two phases don&#39;t share the parsed metadata
+object, so this is a redundant round-trip: harmless, but visible when you
+trace network calls.</p>
 </blockquote>
 </li>
 <li><p><code>POST &lt;token_endpoint&gt;</code> with
@@ -602,8 +601,7 @@ SDK fall back to interactive <code>authorization_code</code> when KYA is unavail
 <code>getTokensForMetadata</code> still logs the advertised profiles for diagnostics.</p>
 <hr>
 <h2>9. Decision Matrix (Gating Logic)</h2>
-<p>This is the central behavioral contract. Given an auth-required remote server
-(not the issuer):</p>
+<p>For an auth-required remote server that is not the issuer, the outcome is:</p>
 <table>
 <thead>
 <tr>
@@ -851,12 +849,12 @@ two HTTP servers for local end-to-end testing:</p>
 <td><code>GET /.well-known/oauth-authorization-server</code> &amp; <code>/openid-configuration</code>, <code>GET /authorize</code> (auto-approving, PKCE), <code>POST /register</code> (DCR), <code>POST /token</code> (jwt-bearer <strong>and</strong> authorization_code), <code>POST /introspect</code>.</td>
 </tr>
 </tbody></table>
-<p>Behaviors worth noting:</p>
+<p>Notable behaviors:</p>
 <ul>
 <li><strong><code>MOCK_DISABLE_KYA=1</code></strong> drops <code>kya</code> from <code>authorization_grant_profiles_supported</code>
 and <code>jwt-bearer</code> from <code>grant_types_supported</code>
 (<code>mock:62-86</code>), turning
-the AS into a vanilla OAuth server — the way to exercise the interactive fallback.</li>
+the AS into a plain OAuth server. That&#39;s how you exercise the interactive fallback.</li>
 <li>The AS <strong>verifies the KYA assertion&#39;s signature</strong> against the real Skyfire QA
 JWKS (<code>https://app-qa.skyfire.xyz/.well-known/jwks.json</code>) and <code>iss</code>
 (<code>verifyKyaAssertion</code>),
@@ -1033,7 +1031,7 @@ instead of failing.</li>
 <code>KYA.md</code>.</li>
 </ul>
 <hr>
-<h2>20. Known Limitations &amp; Future Work</h2>
+<h2>20. Known Limitations</h2>
 <ul>
 <li><strong>Interactive flow is local-only by default.</strong> The loopback redirect lands on
 the server host. A truly remote web app needs the split

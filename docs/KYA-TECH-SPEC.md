@@ -1,16 +1,15 @@
 # KYA + OAuth + MCP Integration — Technical Specification
 
-**Status:** Implemented
-**Audience:** Engineers working on OpenCode's MCP transport, auth, and payment-gateway layers.
-**Scope:** How OpenCode authenticates to protected MCP servers using the KYA
-(Know Your Agent) grant profile, how it falls back to interactive OAuth, how the
-payment gateway (`org.kyapay:pay`) reuses the same capability machinery, and the
-exact code paths, data structures, and network exchanges involved.
+How OpenCode authenticates to protected MCP servers with the KYA (Know Your
+Agent) grant profile, when it falls back to interactive OAuth, and how the
+payment gateway (`org.kyapay:pay`) reuses the same capability machinery. It
+covers the code paths, data structures, and network exchanges involved, for
+engineers working on the MCP transport, auth, and gateway layers.
 
-> This document is the design/architecture reference. For a hands-on runbook
-> (how to start the mock servers, connect from the web UI, read the logs), see
-> [KYA.md](KYA.md). Where the two overlap, this spec is authoritative on
-> *behavior* and KYA.md is authoritative on *operation*.
+> This is the design reference. For a hands-on runbook (starting the mock
+> servers, connecting from the web UI, reading the logs), see [KYA.md](KYA.md).
+> Where the two overlap, this doc is authoritative on behavior and KYA.md on
+> operation.
 
 ---
 
@@ -330,15 +329,15 @@ type KyaMintResult =
   | { minted: false; kyaAdvertised: true; error: string }  // KYA advertised but minting failed → hard fail
 ```
 
-The `kyaAdvertised` flag is the linchpin of the gating logic (§9): it tells the
-caller whether a failure should hard-fail or fall through to interactive OAuth.
+The `kyaAdvertised` flag drives the gating logic (§9): it tells the caller
+whether a failure should hard-fail or fall through to interactive OAuth.
 
 ### 7.1 Issuer self-exclusion
 
 Before any KYA work, callers check `!hasKyaCapability(mcp)`. The issuer
 authenticates via its own configured headers (`skyfire-api-key`), so it must
-never be put through the KYA preflight — otherwise OpenCode would try to mint a
-KYA token *in order to talk to the KYA minter*, a chicken-and-egg deadlock. See
+never be put through the KYA preflight. Otherwise OpenCode would try to mint a
+KYA token just to reach the KYA minter, a chicken-and-egg deadlock. See
 [connect](../packages/opencode/src/mcp/index.ts#L1039-L1041) and
 [connectRemote](../packages/opencode/src/mcp/index.ts#L735).
 
@@ -425,11 +424,11 @@ The Skyfire `create-kya-token` tool requires **exactly one** seller selector.
    `token_endpoint` → error result.
 
    > **Why re-fetch?** Phase B (§7.2) already fetched the same AS metadata, but it
-   > only kept `supportsKya` and the `authServer` origin from it — not the
-   > `token_endpoint`. Phase D therefore re-fetches `<authServer>/.well-known/oauth-authorization-server`
-   > to read `token_endpoint`. This is a redundant round-trip (the two phases don't
-   > share the parsed metadata object); it's correctness-neutral but worth knowing
-   > if you're optimizing or tracing network calls.
+   > only kept `supportsKya` and the `authServer` origin from it, not the
+   > `token_endpoint`. Phase D re-fetches `<authServer>/.well-known/oauth-authorization-server`
+   > to read `token_endpoint`. The two phases don't share the parsed metadata
+   > object, so this is a redundant round-trip: harmless, but visible when you
+   > trace network calls.
 
 2. `POST <token_endpoint>` with
    `content-type: application/x-www-form-urlencoded` and body:
@@ -557,8 +556,7 @@ SDK fall back to interactive `authorization_code` when KYA is unavailable.
 
 ## 9. Decision Matrix (Gating Logic)
 
-This is the central behavioral contract. Given an auth-required remote server
-(not the issuer):
+For an auth-required remote server that is not the issuer, the outcome is:
 
 | KYA advertised? | Issuer configured? | Mint result | `OPENCODE_KYA_INTERACTIVE_FALLBACK` | Outcome |
 | --- | --- | --- | --- | --- |
@@ -768,11 +766,11 @@ two HTTP servers for local end-to-end testing:
 | **Mock MCP** | 8787 | `GET /.well-known/oauth-protected-resource` (→ AS on 8788), `POST /mcp` (Bearer-protected JSON-RPC: `initialize`, `tools/list` [`echo`, `add`], `tools/call`). |
 | **Mock OAuth AS** | 8788 | `GET /.well-known/oauth-authorization-server` & `/openid-configuration`, `GET /authorize` (auto-approving, PKCE), `POST /register` (DCR), `POST /token` (jwt-bearer **and** authorization_code), `POST /introspect`. |
 
-Behaviors worth noting:
+Notable behaviors:
 - **`MOCK_DISABLE_KYA=1`** drops `kya` from `authorization_grant_profiles_supported`
   and `jwt-bearer` from `grant_types_supported`
   ([mock#L62-L86](../packages/opencode/script/mock-mcp-kya-server.ts#L62-L86)), turning
-  the AS into a vanilla OAuth server — the way to exercise the interactive fallback.
+  the AS into a plain OAuth server. That's how you exercise the interactive fallback.
 - The AS **verifies the KYA assertion's signature** against the real Skyfire QA
   JWKS (`https://app-qa.skyfire.xyz/.well-known/jwks.json`) and `iss`
   ([verifyKyaAssertion](../packages/opencode/script/mock-mcp-kya-server.ts#L129-L151)),
@@ -900,7 +898,7 @@ sequenceDiagram
 
 ---
 
-## 20. Known Limitations & Future Work
+## 20. Known Limitations
 
 - **Interactive flow is local-only by default.** The loopback redirect lands on
   the server host. A truly remote web app needs the split
