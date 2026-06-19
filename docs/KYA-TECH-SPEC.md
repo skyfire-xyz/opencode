@@ -21,7 +21,7 @@ is the interactive **Authorization Code + PKCE** flow: open a browser, the user
 consents, an authorization code comes back to a loopback redirect, and the code
 is exchanged for an access token.
 
-That flow assumes a *human* is present to consent. OpenCode acts as an
+That flow assumes a _human_ is present to consent. OpenCode acts as an
 **autonomous agent**, so we want a **non-interactive** way to obtain an access
 token where the agent's identity (not a human's browser session) is what the
 resource server authorizes. That is what **KYA** provides:
@@ -36,31 +36,32 @@ resource server authorizes. That is what **KYA** provides:
    MCP server, which validates it as an ordinary OAuth 2.1 resource server with
    **no KYA awareness**.
 
-KYA is therefore a *non-interactive optimization layered on top of standard
-OAuth*. When a server doesn't advertise KYA (or KYA minting can't be performed),
+KYA is therefore a _non-interactive optimization layered on top of standard
+OAuth_. When a server doesn't advertise KYA (or KYA minting can't be performed),
 OpenCode falls back to the interactive flow.
 
 The same "config capability → issuer MCP tool" machinery is reused at
 **tool-call time** by the **payment gateway** (`org.kyapay:pay`) to mint
-*payment* tokens mid-conversation. That is a sibling feature documented in
+_payment_ tokens mid-conversation. That is a sibling feature documented in
 §12.
 
 ---
 
 ## 2. Terminology & Actors
 
-| Term | Meaning |
-| --- | --- |
-| **Agent** | OpenCode itself (the instance server process). |
-| **MCP server / Resource** | The protected remote MCP server the agent wants to use (e.g. `merchant-mcp`). A plain OAuth 2.1 resource server. |
-| **Resource AS** | The OAuth Authorization Server protecting the resource. Hosts discovery metadata + the `/token` endpoint. |
-| **KYA Issuer** | A remote MCP server that advertises capability `org.kyapay:kya` and exposes a tool (e.g. `create-kya-token`) that mints KYA assertions. In practice this is Skyfire's MCP server. |
-| **KYA assertion** | A signed JWT minted by the issuer, attesting agent identity + seller. *Not* an OAuth access token. |
-| **Access token** | A normal OAuth 2.1 Bearer token issued by the Resource AS in exchange for the assertion. |
-| **Capability** | A URI like `org.kyapay:kya` or `org.kyapay:pay` declared in config, mapped to the issuer tool that fulfills it. |
-| **Seller selector** | The argument passed to the issuer tool identifying the seller: either `sellerServiceId` (a UUID) or `sellerDomainOrUrl` (a hostname). |
+| Term                      | Meaning                                                                                                                                                                           |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Agent**                 | OpenCode itself (the instance server process).                                                                                                                                    |
+| **MCP server / Resource** | The protected remote MCP server the agent wants to use (e.g. `merchant-mcp`). A plain OAuth 2.1 resource server.                                                                  |
+| **Resource AS**           | The OAuth Authorization Server protecting the resource. Hosts discovery metadata + the `/token` endpoint.                                                                         |
+| **KYA Issuer**            | A remote MCP server that advertises capability `org.kyapay:kya` and exposes a tool (e.g. `create-kya-token`) that mints KYA assertions. In practice this is Skyfire's MCP server. |
+| **KYA assertion**         | A signed JWT minted by the issuer, attesting agent identity + seller. _Not_ an OAuth access token.                                                                                |
+| **Access token**          | A normal OAuth 2.1 Bearer token issued by the Resource AS in exchange for the assertion.                                                                                          |
+| **Capability**            | A URI like `org.kyapay:kya` or `org.kyapay:pay` declared in config, mapped to the issuer tool that fulfills it.                                                                   |
+| **Seller selector**       | The argument passed to the issuer tool identifying the seller: either `sellerServiceId` (a UUID) or `sellerDomainOrUrl` (a hostname).                                             |
 
 **Relevant RFCs / specs:**
+
 - **RFC 9728** — OAuth 2.0 Protected Resource Metadata (`/.well-known/oauth-protected-resource`).
 - **RFC 8414** — OAuth 2.0 Authorization Server Metadata (`/.well-known/oauth-authorization-server`).
 - **RFC 7523** — JWT Profile for OAuth Client Authentication and Authorization Grants (`grant_type=…:jwt-bearer`).
@@ -69,6 +70,7 @@ The same "config capability → issuer MCP tool" machinery is reused at
 - **KYA / ID-JAG grant profile drafts** — advertised via `authorization_grant_profiles_supported` in AS metadata; profile URN `urn:ietf:params:oauth:grant-profile:kya`.
 
 Phase labels **B / C / D** used throughout map to the Skyfire×Okta design spec:
+
 - **Phase B** — discovery (find the Resource AS and read its grant profiles).
 - **Phase C** — mint the KYA assertion at the issuer.
 - **Phase D** — exchange the assertion for an access token and use it.
@@ -79,19 +81,19 @@ Phase labels **B / C / D** used throughout map to the Skyfire×Okta design spec:
 
 ### 3.1 Component / file map
 
-| File | Responsibility |
-| --- | --- |
-| [packages/opencode/src/mcp/index.ts](../packages/opencode/src/mcp/index.ts) | The `MCP` Effect service. Owns connection lifecycle, the silent-KYA orchestration (`trySilentKya`), transport selection, status state, and the interactive-auth entry points (`startAuth`/`authenticate`/`finishAuth`). |
-| [packages/opencode/src/mcp/kya.ts](../packages/opencode/src/mcp/kya.ts) | Pure KYA helpers: capability detection, issuer selection from config, JWT extraction, RFC 9728/8414 discovery, RFC 7523 token exchange. **Note:** its `discoverResourceAuthServer` + `exchangeAssertionForAccessToken` are used by the CLI `mcp debug` path only; the silent connect path in `index.ts` has its own inline copies (§7.5). |
-| [packages/opencode/src/mcp/oauth-provider.ts](../packages/opencode/src/mcp/oauth-provider.ts) | `McpOAuthProvider` implementing the MCP SDK's `OAuthClientProvider`. Bridges the SDK's interactive OAuth to OpenCode's token store; defers KYA to the out-of-band path. |
-| [packages/opencode/src/mcp/oauth-callback.ts](../packages/opencode/src/mcp/oauth-callback.ts) | Local loopback HTTP server that receives the `?code=…` redirect for the interactive flow. |
-| [packages/opencode/src/mcp/auth.ts](../packages/opencode/src/mcp/auth.ts) | `McpAuth` Effect service: persistent token/client/state store at `~/.local/share/opencode/mcp-auth.json`. |
-| [packages/opencode/src/mcp/gateway.ts](../packages/opencode/src/mcp/gateway.ts) | The payment gateway: intercepts tool calls, catches `payments/*` signals, mints `org.kyapay:pay` tokens via the issuer, retries the tool. |
-| [packages/opencode/src/config/mcp.ts](../packages/opencode/src/config/mcp.ts) | Config schema for MCP entries (`Local` / `Remote`), OAuth config, and the `capabilities` schema. |
-| [packages/core/src/flag/flag.ts](../packages/core/src/flag/flag.ts) | Environment flags (`OPENCODE_KYA_SELLER_SERVICE_ID`, `OPENCODE_KYA_INTERACTIVE_FALLBACK`). |
-| [packages/opencode/src/cli/cmd/mcp.ts](../packages/opencode/src/cli/cmd/mcp.ts) | CLI surface: `mcp list / auth / logout / add / debug`. `debug` runs a standalone KYA mint for diagnosis. |
-| [packages/opencode/script/mock-mcp-kya-server.ts](../packages/opencode/script/mock-mcp-kya-server.ts) | Local mock of the protected MCP server **and** Resource AS, for end-to-end testing. |
-| [packages/app/src/components/dialog-select-mcp.tsx](../packages/app/src/components/dialog-select-mcp.tsx), [status-popover-body.tsx](../packages/app/src/components/status-popover-body.tsx) | Web UI entry points that call `connect` / `mcp.auth.authenticate`. |
+| File                                                                                                                                                                                         | Responsibility                                                                                                                                                                                                                                                                                                                            |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [packages/opencode/src/mcp/index.ts](../packages/opencode/src/mcp/index.ts)                                                                                                                  | The `MCP` Effect service. Owns connection lifecycle, the silent-KYA orchestration (`trySilentKya`), transport selection, status state, and the interactive-auth entry points (`startAuth`/`authenticate`/`finishAuth`).                                                                                                                   |
+| [packages/opencode/src/mcp/kya.ts](../packages/opencode/src/mcp/kya.ts)                                                                                                                      | Pure KYA helpers: capability detection, issuer selection from config, JWT extraction, RFC 9728/8414 discovery, RFC 7523 token exchange. **Note:** its `discoverResourceAuthServer` + `exchangeAssertionForAccessToken` are used by the CLI `mcp debug` path only; the silent connect path in `index.ts` has its own inline copies (§7.5). |
+| [packages/opencode/src/mcp/oauth-provider.ts](../packages/opencode/src/mcp/oauth-provider.ts)                                                                                                | `McpOAuthProvider` implementing the MCP SDK's `OAuthClientProvider`. Bridges the SDK's interactive OAuth to OpenCode's token store; defers KYA to the out-of-band path.                                                                                                                                                                   |
+| [packages/opencode/src/mcp/oauth-callback.ts](../packages/opencode/src/mcp/oauth-callback.ts)                                                                                                | Local loopback HTTP server that receives the `?code=…` redirect for the interactive flow.                                                                                                                                                                                                                                                 |
+| [packages/opencode/src/mcp/auth.ts](../packages/opencode/src/mcp/auth.ts)                                                                                                                    | `McpAuth` Effect service: persistent token/client/state store at `~/.local/share/opencode/mcp-auth.json`.                                                                                                                                                                                                                                 |
+| [packages/opencode/src/mcp/gateway.ts](../packages/opencode/src/mcp/gateway.ts)                                                                                                              | The payment gateway: intercepts tool calls, catches `payments/*` signals, mints `org.kyapay:pay` tokens via the issuer, retries the tool.                                                                                                                                                                                                 |
+| [packages/opencode/src/config/mcp.ts](../packages/opencode/src/config/mcp.ts)                                                                                                                | Config schema for MCP entries (`Local` / `Remote`), OAuth config, and the `capabilities` schema.                                                                                                                                                                                                                                          |
+| [packages/core/src/flag/flag.ts](../packages/core/src/flag/flag.ts)                                                                                                                          | Environment flags (`OPENCODE_KYA_SELLER_SERVICE_ID`, `OPENCODE_KYA_INTERACTIVE_FALLBACK`).                                                                                                                                                                                                                                                |
+| [packages/opencode/src/cli/cmd/mcp.ts](../packages/opencode/src/cli/cmd/mcp.ts)                                                                                                              | CLI surface: `mcp list / auth / logout / add / debug`. `debug` runs a standalone KYA mint for diagnosis.                                                                                                                                                                                                                                  |
+| [packages/opencode/script/mock-mcp-kya-server.ts](../packages/opencode/script/mock-mcp-kya-server.ts)                                                                                        | Local mock of the protected MCP server **and** Resource AS, for end-to-end testing.                                                                                                                                                                                                                                                       |
+| [packages/app/src/components/dialog-select-mcp.tsx](../packages/app/src/components/dialog-select-mcp.tsx), [status-popover-body.tsx](../packages/app/src/components/status-popover-body.tsx) | Web UI entry points that call `connect` / `mcp.auth.authenticate`.                                                                                                                                                                                                                                                                        |
 
 ### 3.2 High-level data flow
 
@@ -186,20 +188,20 @@ without a `tool` can't mint and is skipped by the gateway.
   "mcp": {
     "merchant": {
       "type": "remote",
-      "url": "https://merchant.example.com/mcp"
+      "url": "https://merchant.example.com/mcp",
     },
     "skyfire": {
       "type": "remote",
       "url": "http://mcp.skyfire.xyz/mcp",
       "capabilities": {
         "org.kyapay:kya": { "tool": "create-kya-token" },
-        "org.kyapay:pay": { "tool": "create-pay-token" }
+        "org.kyapay:pay": { "tool": "create-pay-token" },
       },
       "headers": {
-        "skyfire-api-key": "{env:SKYFIRE_API_KEY}"
-      }
-    }
-  }
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
+      },
+    },
+  },
 }
 ```
 
@@ -218,6 +220,7 @@ to the KYA issuer). See §7.1.
 
 [hasKyaCapability](../packages/opencode/src/mcp/kya.ts#L13-L17) returns true when an
 entry's `capabilities` either:
+
 - (record form) contains the key `org.kyapay:kya`, or
 - (array form) includes the string `"org.kyapay:kya"`.
 
@@ -235,6 +238,7 @@ type KyaIssuer = { name: string; config: ConfigMCP.Remote; tool: string }
 ```
 
 Key properties:
+
 - **Selection is by capability, not by server name.** The example server is
   named `skyfire` but any name works.
 - **Tool resolution** ([kyaCapabilityTool](../packages/opencode/src/mcp/kya.ts#L31-L41)):
@@ -249,6 +253,7 @@ Key properties:
 [buildCapabilityMap](../packages/opencode/src/mcp/gateway.ts#L223-L239) builds a
 `{ [capabilityURI]: { server, tool } }` map across **all** configured servers,
 record form only. This drives both:
+
 - **Payment routing** (§12), and
 - **Provider hiding** in [MCP.tools](../packages/opencode/src/mcp/index.ts#L1086-L1135):
   any server that appears as a capability provider is excluded from the toolset
@@ -264,14 +269,14 @@ record form only. This drives both:
 
 [Status](../packages/opencode/src/mcp/index.ts#L106-L114) is a discriminated union:
 
-| Status | Meaning |
-| --- | --- |
-| `connected` | Client connected, tools listed and cached. |
-| `disabled` | `enabled: false`, or explicitly disconnected. |
-| `not_connected` | Configured but never connected this session. |
-| `needs_auth` | Auth required; interactive OAuth available (KYA not advertised, or fallback enabled). |
-| `needs_client_registration` | Server requires a pre-registered client; DCR unsupported. |
-| `failed` | Connection or KYA minting failed; carries an `error` string. |
+| Status                      | Meaning                                                                               |
+| --------------------------- | ------------------------------------------------------------------------------------- |
+| `connected`                 | Client connected, tools listed and cached.                                            |
+| `disabled`                  | `enabled: false`, or explicitly disconnected.                                         |
+| `not_connected`             | Configured but never connected this session.                                          |
+| `needs_auth`                | Auth required; interactive OAuth available (KYA not advertised, or fallback enabled). |
+| `needs_client_registration` | Server requires a pre-registered client; DCR unsupported.                             |
+| `failed`                    | Connection or KYA minting failed; carries an `error` string.                          |
 
 ### 6.2 Connections are lazy
 
@@ -286,14 +291,14 @@ There are **two** places the silent KYA flow can run, and they must produce the
 same B→C→D behavior:
 
 1. **`MCP.connect` preflight** ([index.ts#L1036-L1076](../packages/opencode/src/mcp/index.ts#L1036-L1076)) —
-   runs `trySilentKya` *up front*, before attempting transport connect, for any
+   runs `trySilentKya` _up front_, before attempting transport connect, for any
    remote server that is not itself the issuer. If KYA is advertised but minting
    fails, it sets `failed` and stops (no interactive fallback in the demo
    default).
 
 2. **`connectRemote` 401 catch handler** ([index.ts#L732-L782](../packages/opencode/src/mcp/index.ts#L732-L782)) —
    the auto-connect path (e.g. when `createAndStore` runs without the preflight)
-   catches the `UnauthorizedError` from the StreamableHTTP attempt and *then*
+   catches the `UnauthorizedError` from the StreamableHTTP attempt and _then_
    runs `trySilentKya`, retrying the transport on success.
 
 Both call the identical [trySilentKya](../packages/opencode/src/mcp/index.ts#L188-L437).
@@ -303,6 +308,7 @@ Both call the identical [trySilentKya](../packages/opencode/src/mcp/index.ts#L18
 `connectRemote` tries **StreamableHTTP first, then SSE**
 ([index.ts#L669-L684](../packages/opencode/src/mcp/index.ts#L669-L684)). Important
 nuances:
+
 - A 401 on the StreamableHTTP attempt sets `stopTransportFallback = true`
   ([index.ts#L714](../packages/opencode/src/mcp/index.ts#L714)) — the server clearly
   speaks HTTP and just needs auth, so we **never** fall back to SSE (which would
@@ -324,9 +330,9 @@ returns a `KyaMintResult`:
 
 ```ts
 type KyaMintResult =
-  | { minted: true;  kyaAdvertised: true }                 // success
-  | { minted: false; kyaAdvertised: false }                // KYA not advertised → caller may fall back
-  | { minted: false; kyaAdvertised: true; error: string }  // KYA advertised but minting failed → hard fail
+  | { minted: true; kyaAdvertised: true } // success
+  | { minted: false; kyaAdvertised: false } // KYA not advertised → caller may fall back
+  | { minted: false; kyaAdvertised: true; error: string } // KYA advertised but minting failed → hard fail
 ```
 
 The `kyaAdvertised` flag drives the gating logic (§9): it tells the caller
@@ -358,7 +364,7 @@ KYA token just to reach the KYA minter, a chicken-and-egg deadlock. See
    - `authorization_servers: string[]` → the Resource AS origin (`authServers[0]`).
    - optionally `seller_service_id` → a seller identity the resource advertises
      for itself ([index.ts#L233-L235](../packages/opencode/src/mcp/index.ts#L233-L235)).
-   If there's no auth server, `supportsKya: false` and the flow short-circuits.
+     If there's no auth server, `supportsKya: false` and the flow short-circuits.
 
 3. **B5–B6 AS metadata.** `GET <authServer>/.well-known/oauth-authorization-server`
    (RFC 8414), falling back to `/.well-known/openid-configuration`. From the
@@ -374,7 +380,7 @@ KYA token just to reach the KYA minter, a chicken-and-egg deadlock. See
 fall back to interactive OAuth ([index.ts#L266-L269](../packages/opencode/src/mcp/index.ts#L266-L269)).
 Once we pass this gate, the internal `advertised` flag is set to `true`
 ([index.ts#L270](../packages/opencode/src/mcp/index.ts#L270)), which guarantees any
-*subsequent* thrown failure is reported as `kyaAdvertised: true` (see §7.6).
+_subsequent_ thrown failure is reported as `kyaAdvertised: true` (see §7.6).
 
 > All of Phase B is wrapped in a `try/catch` that resolves to
 > `{ supportsKya: false }` on error ([index.ts#L263](../packages/opencode/src/mcp/index.ts#L263)),
@@ -432,14 +438,16 @@ The Skyfire `create-kya-token` tool requires **exactly one** seller selector.
 
 2. `POST <token_endpoint>` with
    `content-type: application/x-www-form-urlencoded` and body:
+
    ```
    grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
    assertion=<kya_jwt>
    ```
+
    A non-2xx throws `OAuth token exchange failed (<status>): <body>`
    ([index.ts#L381-L392](../packages/opencode/src/mcp/index.ts#L381-L392)).
 
-   > **The exchange is client-unauthenticated.** The request carries *only*
+   > **The exchange is client-unauthenticated.** The request carries _only_
    > `grant_type` and `assertion` — there is **no** `client_id`/`client_secret`, no
    > `Authorization` header, and **no `scope` parameter**. All trust derives from
    > the issuer-signed assertion; the AS is responsible for validating its
@@ -462,7 +470,7 @@ The Skyfire `create-kya-token` tool requires **exactly one** seller selector.
 5. Return `{ minted: true, kyaAdvertised: true }`.
 
 > **Two implementations of the exchange exist.** The silent connect path above is
-> an **inline** copy inside `trySilentKya`. A second, *standalone* implementation
+> an **inline** copy inside `trySilentKya`. A second, _standalone_ implementation
 > lives in [exchangeAssertionForAccessToken](../packages/opencode/src/mcp/kya.ts#L122-L137)
 > (plus [discoverResourceAuthServer](../packages/opencode/src/mcp/kya.ts#L82-L116))
 > and is used **only** by the CLI `mcp debug` command (§14.3). The two are parallel
@@ -474,6 +482,7 @@ The Skyfire `create-kya-token` tool requires **exactly one** seller selector.
 
 The whole generator is wrapped in `Effect.catch`
 ([index.ts#L421-L436](../packages/opencode/src/mcp/index.ts#L421-L436)):
+
 - If the `advertised` flag was set (we passed the §7.2 gate), any thrown failure
   (issuer connect, tool call, token exchange) becomes
   `{ minted: false, kyaAdvertised: true, error }`. This is deliberate: a genuine
@@ -511,7 +520,7 @@ transport and the interactive `startAuth` flow.
 
 The constructor normalizes `serverUrl` to its **origin**
 ([oauth-provider.ts#L44-L49](../packages/opencode/src/mcp/oauth-provider.ts#L44-L49)).
-The SDK treats the provider's server URL as the *origin* where `/.well-known/*`
+The SDK treats the provider's server URL as the _origin_ where `/.well-known/*`
 lives, but MCP transport URLs often include the `/mcp` path. Normalizing to the
 origin ensures (a) discovery doesn't 404 on `/mcp/.well-known/*`, and (b) tokens
 stored out-of-band by KYA (keyed by origin) are matched by `getForUrl()` here.
@@ -530,7 +539,7 @@ stored out-of-band by KYA (keyed by origin) are matched by `getForUrl()` here.
 - `saveClientInformation()` stores DCR results.
 - `codeVerifier` / `state` are persisted for PKCE + CSRF. `state()`
   ([oauth-provider.ts#L215-L230](../packages/opencode/src/mcp/oauth-provider.ts#L215-L230))
-  is a *generator*: the SDK calls it to both read and mint state, so it creates a
+  is a _generator_: the SDK calls it to both read and mint state, so it creates a
   random 32-byte hex value if none is saved.
 
 ### 8.3 Discovery via `WWW-Authenticate`
@@ -547,7 +556,7 @@ confusing "Invalid OAuth error response" when an MCP origin returns a plain-text
 ([oauth-provider.ts#L254-L276](../packages/opencode/src/mcp/oauth-provider.ts#L254-L276))
 **return `undefined` by design**. The KYA jwt-bearer exchange is **not** driven
 through the SDK's grant-profile hooks; it runs out-of-band in `trySilentKya`,
-which discovers, mints, exchanges, and `saveTokens()` *before* the transport is
+which discovers, mints, exchanges, and `saveTokens()` _before_ the transport is
 retried. Returning `undefined` keeps `trySilentKya` authoritative and lets the
 SDK fall back to interactive `authorization_code` when KYA is unavailable.
 `getTokensForMetadata` still logs the advertised profiles for diagnostics.
@@ -558,19 +567,20 @@ SDK fall back to interactive `authorization_code` when KYA is unavailable.
 
 For an auth-required remote server that is not the issuer, the outcome is:
 
-| KYA advertised? | Issuer configured? | Mint result | `OPENCODE_KYA_INTERACTIVE_FALLBACK` | Outcome |
-| --- | --- | --- | --- | --- |
-| No | — | — | — | **Interactive OAuth** (`needs_auth`) — always |
-| Yes | Yes | success | — | **Connected** via Bearer |
-| Yes | Yes | failure | — | **`failed`** (clear KYA error; no fallback) |
-| Yes | No | — | unset (default) | **`failed`** ("KYA supported but no issuer configured") |
-| Yes | No | — | set | **Interactive OAuth** (`needs_auth`) |
+| KYA advertised? | Issuer configured? | Mint result | `OPENCODE_KYA_INTERACTIVE_FALLBACK` | Outcome                                                 |
+| --------------- | ------------------ | ----------- | ----------------------------------- | ------------------------------------------------------- |
+| No              | —                  | —           | —                                   | **Interactive OAuth** (`needs_auth`) — always           |
+| Yes             | Yes                | success     | —                                   | **Connected** via Bearer                                |
+| Yes             | Yes                | failure     | —                                   | **`failed`** (clear KYA error; no fallback)             |
+| Yes             | No                 | —           | unset (default)                     | **`failed`** ("KYA supported but no issuer configured") |
+| Yes             | No                 | —           | set                                 | **Interactive OAuth** (`needs_auth`)                    |
 
 Where this is enforced:
+
 - **No KYA advertised → fallback:** `trySilentKya` returns
   `kyaAdvertised: false`; the 401 handler proceeds to set `needs_auth`
   ([index.ts#L784-L794](../packages/opencode/src/mcp/index.ts#L784-L794)).
-- **KYA advertised, no issuer, default:** short-circuited *before* calling
+- **KYA advertised, no issuer, default:** short-circuited _before_ calling
   `trySilentKya` in the 401 handler
   ([index.ts#L739-L749](../packages/opencode/src/mcp/index.ts#L739-L749)), set to
   `failed`. The flag flips this to fall through.
@@ -580,7 +590,7 @@ Where this is enforced:
   preflight [index.ts#L1053-L1072](../packages/opencode/src/mcp/index.ts#L1053-L1072)).
 
 Rationale: in this demo, KYA is the sanctioned non-interactive path. Silently
-dropping to a browser prompt when KYA was *supposed* to work would hide real
+dropping to a browser prompt when KYA was _supposed_ to work would hide real
 failures, so the default is "KYA or bust" with an explicit opt-out flag.
 
 ---
@@ -594,6 +604,7 @@ callback server.
 ### 10.1 `startAuth`
 
 [startAuth](../packages/opencode/src/mcp/index.ts#L1213-L1272):
+
 1. Validate the server is remote with OAuth enabled.
 2. Resolve the effective redirect URI: `oauth.redirectUri` >
    `http://127.0.0.1:<callbackPort>/mcp/oauth/callback` > default port 19876.
@@ -607,6 +618,7 @@ callback server.
 ### 10.2 `authenticate`
 
 [authenticate](../packages/opencode/src/mcp/index.ts#L1274-L1332):
+
 - If `startAuth` returned **no** URL (already authorized), it lists tools and
   stores the client directly.
 - Otherwise it opens the browser
@@ -631,6 +643,7 @@ the code verifier, and `createAndStore`s the now-authenticated client.
 
 [oauth-callback.ts](../packages/opencode/src/mcp/oauth-callback.ts) is a singleton
 `http` server on the redirect port (default 19876). Key behaviors:
+
 - Only the configured `currentPath` is honored; everything else 404s.
 - **State is mandatory** — a missing `state` is rejected as a potential CSRF
   attack ([oauth-callback.ts#L92-L99](../packages/opencode/src/mcp/oauth-callback.ts#L92-L99)),
@@ -667,6 +680,7 @@ the code verifier, and `createAndStore`s the now-authenticated client.
   `expiresAt < now`.
 
 Wipe all stored MCP auth for a clean test:
+
 ```sh
 rm ~/.local/share/opencode/mcp-auth.json
 ```
@@ -676,11 +690,12 @@ rm ~/.local/share/opencode/mcp-auth.json
 ## 12. Payment Gateway (`org.kyapay:pay`) — Sibling Feature
 
 The gateway reuses the capability machinery at **tool-call time** to mint
-*payment* tokens. It is wired in via [convertMcpTool](../packages/opencode/src/mcp/index.ts#L472-L515):
+_payment_ tokens. It is wired in via [convertMcpTool](../packages/opencode/src/mcp/index.ts#L472-L515):
 when any capability is configured, each tool's `execute` routes through
 [executeWithGateway](../packages/opencode/src/mcp/gateway.ts#L261-L445).
 
 Flow ([gateway.ts](../packages/opencode/src/mcp/gateway.ts)):
+
 1. Call the requested tool normally.
 2. If the result is an error carrying a `payments/*` signal in `_meta`
    ([parsePaymentSignal](../packages/opencode/src/mcp/gateway.ts#L34-L69)) — settlement
@@ -700,8 +715,8 @@ Flow ([gateway.ts](../packages/opencode/src/mcp/gateway.ts)):
 The gateway shares the issuer-hiding rule (§5.3): provider servers are excluded
 from the LLM-visible toolset so the model can't call the mint tools directly.
 
-> **KYA vs. pay:** KYA mints an *auth* assertion to *connect* to a server; pay
-> mints a *payment* token to *settle a transaction* with an already-connected
+> **KYA vs. pay:** KYA mints an _auth_ assertion to _connect_ to a server; pay
+> mints a _payment_ token to _settle a transaction_ with an already-connected
 > server. Both go through the same configured issuer; only the capability URI and
 > tool differ.
 
@@ -711,9 +726,9 @@ from the LLM-visible toolset so the model can't call the mint tools directly.
 
 Defined in [flag.ts](../packages/core/src/flag/flag.ts), evaluated at access time:
 
-| Flag | Effect |
-| --- | --- |
-| `OPENCODE_KYA_SELLER_SERVICE_ID` | Pins the seller selector to a specific `sellerServiceId` UUID, overriding URL-derived selection ([flag.ts#L79-L81](../packages/core/src/flag/flag.ts#L79-L81)). |
+| Flag                                | Effect                                                                                                                                                                                                                                                                                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCODE_KYA_SELLER_SERVICE_ID`    | Pins the seller selector to a specific `sellerServiceId` UUID, overriding URL-derived selection ([flag.ts#L79-L81](../packages/core/src/flag/flag.ts#L79-L81)).                                                                                                                                                                                   |
 | `OPENCODE_KYA_INTERACTIVE_FALLBACK` | When set, an auth-required server that advertises KYA but has **no configured issuer** falls through to interactive OAuth instead of hard-failing ([flag.ts#L85-L87](../packages/core/src/flag/flag.ts#L85-L87)). Does **not** affect the "no KYA advertised" case (which always falls back) or the "mint failed" case (which always hard-fails). |
 
 `truthy()` accepts `"1"` or `"true"` (case-insensitive).
@@ -727,6 +742,7 @@ Defined in [flag.ts](../packages/core/src/flag/flag.ts), evaluated at access tim
 [dialog-select-mcp.tsx](../packages/app/src/components/dialog-select-mcp.tsx) and
 [status-popover-body.tsx](../packages/app/src/components/status-popover-body.tsx)
 toggle servers. On toggle:
+
 - `connected` → `mcp.disconnect({ name })`.
 - `needs_auth` → `mcp.auth.authenticate({ name })` — drives the **interactive**
   flow (opens browser on the server host; see §10.4 loopback caveat).
@@ -744,6 +760,7 @@ curl -sS 'http://localhost:4096/mcp?directory=<urlenc>'
 ### 14.3 CLI
 
 [cli/cmd/mcp.ts](../packages/opencode/src/cli/cmd/mcp.ts):
+
 - `opencode mcp list` — servers + status.
 - `opencode mcp auth [name]` — interactive OAuth (`authenticate`).
 - `opencode mcp logout [name]` — `removeAuth`.
@@ -761,12 +778,13 @@ curl -sS 'http://localhost:4096/mcp?directory=<urlenc>'
 [mock-mcp-kya-server.ts](../packages/opencode/script/mock-mcp-kya-server.ts) runs
 two HTTP servers for local end-to-end testing:
 
-| Server | Port | Endpoints |
-| --- | --- | --- |
-| **Mock MCP** | 8787 | `GET /.well-known/oauth-protected-resource` (→ AS on 8788), `POST /mcp` (Bearer-protected JSON-RPC: `initialize`, `tools/list` [`echo`, `add`], `tools/call`). |
+| Server            | Port | Endpoints                                                                                                                                                                                                            |
+| ----------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Mock MCP**      | 8787 | `GET /.well-known/oauth-protected-resource` (→ AS on 8788), `POST /mcp` (Bearer-protected JSON-RPC: `initialize`, `tools/list` [`echo`, `add`], `tools/call`).                                                       |
 | **Mock OAuth AS** | 8788 | `GET /.well-known/oauth-authorization-server` & `/openid-configuration`, `GET /authorize` (auto-approving, PKCE), `POST /register` (DCR), `POST /token` (jwt-bearer **and** authorization_code), `POST /introspect`. |
 
 Notable behaviors:
+
 - **`MOCK_DISABLE_KYA=1`** drops `kya` from `authorization_grant_profiles_supported`
   and `jwt-bearer` from `grant_types_supported`
   ([mock#L62-L86](../packages/opencode/script/mock-mcp-kya-server.ts#L62-L86)), turning
@@ -841,21 +859,21 @@ sequenceDiagram
 
 ## 17. Error Handling & Edge Cases
 
-| Situation | Behavior | Code |
-| --- | --- | --- |
-| Invalid MCP URL | `failed` immediately | [remoteURL](../packages/opencode/src/mcp/index.ts#L131-L134) |
-| Discovery/network error in Phase B | Treated as "KYA not advertised" → fallback eligible | [index.ts#L263](../packages/opencode/src/mcp/index.ts#L263) |
-| KYA advertised, no issuer (default) | `failed` with actionable message | [index.ts#L739-L749](../packages/opencode/src/mcp/index.ts#L739-L749) |
-| Issuer returns non-JWT text | `failed` "Could not extract JWT assertion…" | [index.ts#L336-L342](../packages/opencode/src/mcp/index.ts#L336-L342) |
-| AS metadata missing `token_endpoint` | `failed` | [index.ts#L366-L372](../packages/opencode/src/mcp/index.ts#L366-L372) |
-| Token exchange non-2xx | `failed` with status + body | [index.ts#L388](../packages/opencode/src/mcp/index.ts#L388) |
-| 401 on StreamableHTTP | No SSE fallback; auth path only | [stopTransportFallback](../packages/opencode/src/mcp/index.ts#L714) |
-| Server needs pre-registered client | `needs_client_registration` | [index.ts#L716-L730](../packages/opencode/src/mcp/index.ts#L716-L730) |
-| Interactive: missing/invalid state | Callback rejected (CSRF) | [oauth-callback.ts#L92-L131](../packages/opencode/src/mcp/oauth-callback.ts#L92-L131) |
-| Interactive: state mismatch | Throw "OAuth state mismatch" | [index.ts#L1326-L1329](../packages/opencode/src/mcp/index.ts#L1326-L1329) |
-| Browser won't open | Publish `BrowserOpenFailed`; CLI prints URL | [index.ts#L1317-L1320](../packages/opencode/src/mcp/index.ts#L1317-L1320) |
-| Callback timeout | Reject after 5 min | [oauth-callback.ts#L65](../packages/opencode/src/mcp/oauth-callback.ts#L65) |
-| Token bound to wrong origin | `getForUrl` returns undefined → re-auth | [auth.ts#L74-L80](../packages/opencode/src/mcp/auth.ts#L74-L80) |
+| Situation                            | Behavior                                            | Code                                                                                  |
+| ------------------------------------ | --------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Invalid MCP URL                      | `failed` immediately                                | [remoteURL](../packages/opencode/src/mcp/index.ts#L131-L134)                          |
+| Discovery/network error in Phase B   | Treated as "KYA not advertised" → fallback eligible | [index.ts#L263](../packages/opencode/src/mcp/index.ts#L263)                           |
+| KYA advertised, no issuer (default)  | `failed` with actionable message                    | [index.ts#L739-L749](../packages/opencode/src/mcp/index.ts#L739-L749)                 |
+| Issuer returns non-JWT text          | `failed` "Could not extract JWT assertion…"         | [index.ts#L336-L342](../packages/opencode/src/mcp/index.ts#L336-L342)                 |
+| AS metadata missing `token_endpoint` | `failed`                                            | [index.ts#L366-L372](../packages/opencode/src/mcp/index.ts#L366-L372)                 |
+| Token exchange non-2xx               | `failed` with status + body                         | [index.ts#L388](../packages/opencode/src/mcp/index.ts#L388)                           |
+| 401 on StreamableHTTP                | No SSE fallback; auth path only                     | [stopTransportFallback](../packages/opencode/src/mcp/index.ts#L714)                   |
+| Server needs pre-registered client   | `needs_client_registration`                         | [index.ts#L716-L730](../packages/opencode/src/mcp/index.ts#L716-L730)                 |
+| Interactive: missing/invalid state   | Callback rejected (CSRF)                            | [oauth-callback.ts#L92-L131](../packages/opencode/src/mcp/oauth-callback.ts#L92-L131) |
+| Interactive: state mismatch          | Throw "OAuth state mismatch"                        | [index.ts#L1326-L1329](../packages/opencode/src/mcp/index.ts#L1326-L1329)             |
+| Browser won't open                   | Publish `BrowserOpenFailed`; CLI prints URL         | [index.ts#L1317-L1320](../packages/opencode/src/mcp/index.ts#L1317-L1320)             |
+| Callback timeout                     | Reject after 5 min                                  | [oauth-callback.ts#L65](../packages/opencode/src/mcp/oauth-callback.ts#L65)           |
+| Token bound to wrong origin          | `getForUrl` returns undefined → re-auth             | [auth.ts#L74-L80](../packages/opencode/src/mcp/auth.ts#L74-L80)                       |
 
 ---
 
@@ -889,7 +907,7 @@ sequenceDiagram
 - **Interactive fallback:** run the mock with `MOCK_DISABLE_KYA=1`, configure only
   `merchant-mcp` (no issuer) → connect yields `needs_auth`; complete via
   `opencode mcp auth merchant-mcp`. (No flag needed because KYA isn't advertised.)
-- **"KYA advertised, no issuer" fallback:** run the mock *with* KYA, omit the
+- **"KYA advertised, no issuer" fallback:** run the mock _with_ KYA, omit the
   issuer, set `OPENCODE_KYA_INTERACTIVE_FALLBACK=1` → falls through to interactive
   instead of failing.
 - **Diagnostics:** `opencode mcp debug <name>` mints + proves a token end to end.
@@ -916,4 +934,7 @@ sequenceDiagram
 - **Demo seller placeholder.** Loopback/private targets are mapped to
   `mcp-server.com`; real deployments must register their domain (or use
   `OPENCODE_KYA_SELLER_SERVICE_ID`) in the Skyfire seller directory.
+
+```
+
 ```
