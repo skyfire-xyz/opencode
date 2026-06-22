@@ -256,6 +256,9 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
   for (const [serverName, entry] of Object.entries(mcpConfig)) {
     if (!("type" in entry)) continue
     const info = entry as ConfigMCP.Info
+    // A disabled server is never connected, so it can never mint — drop it as a
+    // candidate up front (mirrors the `enabled === false` guard in `create`).
+    if (info.enabled === false) continue
     if (!("capabilities" in info) || !info.capabilities) continue
     // Derive the provider's issuer identity from its server url origin. Local
     // providers have no url, so they carry no issuer constraint.
@@ -269,11 +272,11 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     }
     for (const [cap, capConfig] of Object.entries(info.capabilities)) {
       // `tool` is optional in the schema; an entry without one can't mint.
-      if (!capConfig.tool)
-        continue
-        // Append rather than overwrite: multiple servers may declare the same
-        // capability (different issuers), and we want all of them as candidates.
-      ;(map[cap] ??= []).push({ server: serverName, tool: capConfig.tool, issuer })
+      if (!capConfig.tool) continue
+      // Append rather than overwrite: multiple servers may declare the same
+      // capability (different issuers), and we want all of them as candidates.
+      map[cap] ??= []
+      map[cap].push({ server: serverName, tool: capConfig.tool, issuer })
     }
   }
   return map
