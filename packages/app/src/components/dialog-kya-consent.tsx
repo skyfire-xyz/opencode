@@ -27,7 +27,16 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
     mutationFn: () => sdk.client.mcp.connect({ name: props.name, kyaConsent: "true" }),
     onSuccess: async () => {
       dialog.close()
-      await queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory)))
+      // Post-consent minting can fail (e.g. issuer not enabled) as a `failed` status,
+      // not a thrown error. Read the refetched cache directly; sync.data.mcp can lag.
+      const opts = queryOptions.mcp(pathKey(sync.directory))
+      await queryClient.refetchQueries(opts)
+      const status = queryClient.getQueryData<Record<string, { status: string; error?: string }>>(opts.queryKey)?.[
+        props.name
+      ]
+      if (status?.status === "failed") {
+        showToast({ variant: "error", title: language.t("common.requestFailed"), description: status.error })
+      }
     },
     onError: (err) => {
       dialog.close()

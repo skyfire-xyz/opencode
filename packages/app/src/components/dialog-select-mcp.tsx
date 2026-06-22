@@ -4,6 +4,7 @@ import { useSync } from "@/context/sync"
 import { useSDK } from "@/context/sdk"
 import { Dialog } from "@opencode-ai/ui/dialog"
 import { useDialog } from "@opencode-ai/ui/context/dialog"
+import { showToast } from "@opencode-ai/ui/toast"
 import { List } from "@opencode-ai/ui/list"
 import { Switch } from "@opencode-ai/ui/switch"
 import { useLanguage } from "@/context/language"
@@ -52,9 +53,15 @@ export const DialogSelectMcp: Component = () => {
       await sdk.client.mcp.connect({ name })
     },
     onSuccess: async (_data, name) => {
-      await queryClient.refetchQueries(queryOptions.mcp(pathKey(sync.directory)))
-      if (sync.data.mcp[name]?.status === "needs_kya_consent") {
+      // Read the refetched cache directly; sync.data.mcp can lag inside this callback.
+      const opts = queryOptions.mcp(pathKey(sync.directory))
+      await queryClient.refetchQueries(opts)
+      const status = queryClient.getQueryData<Record<string, { status: string; error?: string }>>(opts.queryKey)?.[name]
+      if (status?.status === "needs_kya_consent") {
         dialog.show(() => <DialogKyaConsent name={name} />)
+      } else if (status?.status === "failed") {
+        // `failed` is a resolved status, not a thrown error — surface its reason.
+        showToast({ variant: "error", title: language.t("common.requestFailed"), description: status.error })
       }
     },
   }))
