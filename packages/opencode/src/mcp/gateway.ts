@@ -25,6 +25,13 @@ interface PaymentSignal {
   sellerServiceId?: string
   /** Optional search hint used to look the seller up via find-sellers if no id is supplied. */
   sellerSearch?: string
+  /**
+   * Accepted issuer origins keyed by settlement type. A type the merchant
+   * constrains (e.g. COIN) lists the issuers it will settle with; a type absent
+   * from this map (or the map being absent entirely) carries no issuer
+   * constraint and matches any provider, as before.
+   */
+  issuersByType?: Record<string, string[]>
 }
 
 interface MandateSignal {
@@ -43,8 +50,21 @@ function parsePaymentSignal(result: CallToolResult): PaymentSignal | undefined {
   const total = meta["payments/amount/total"]
   if (typeof total !== "number") return undefined
 
+  // Validate payments/settlement/issuers as an object of type → string[]. Drop
+  // malformed entries; an empty/absent map means no issuer constraints.
+  let issuersByType: Record<string, string[]> | undefined
+  const issuersRaw = meta["payments/settlement/issuers"]
+  if (issuersRaw && typeof issuersRaw === "object" && !Array.isArray(issuersRaw)) {
+    const parsed: Record<string, string[]> = {}
+    for (const [type, list] of Object.entries(issuersRaw as Record<string, unknown>)) {
+      if (Array.isArray(list) && list.every((v) => typeof v === "string")) parsed[type] = list as string[]
+    }
+    if (Object.keys(parsed).length > 0) issuersByType = parsed
+  }
+
   return {
     settlementTypes: types as string[],
+    issuersByType,
     currency:
       typeof meta["payments/settlement/currency"] === "string"
         ? (meta["payments/settlement/currency"] as string)
@@ -213,6 +233,12 @@ export interface CapabilityEntry {
   server: string
   /** The tool on that server to call when minting a token. */
   tool: string
+  /**
+   * The provider's issuer identity: the origin of its configured server url
+   * (e.g. https://mcp-qa.skyfire.xyz/mcp → https://mcp-qa.skyfire.xyz). Only
+   * remote providers have one; local providers leave this undefined.
+   */
+  issuer?: string
 }
 
 export interface CapabilityMap {
@@ -229,10 +255,20 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     // The legacy array form ("org.kyapay:kya"[]) carries no tool name, so it
     // can't be a gateway provider — only the record form maps a URI to a tool.
     if (Array.isArray(info.capabilities)) continue
+    // Derive the provider's issuer identity from its server url origin. Local
+    // providers have no url, so they carry no issuer constraint.
+    let issuer: string | undefined
+    if (info.type === "remote" && typeof info.url === "string") {
+      try {
+        issuer = new URL(info.url).origin
+      } catch {
+        issuer = undefined
+      }
+    }
     for (const [cap, capConfig] of Object.entries(info.capabilities)) {
       // `tool` is optional in the schema; an entry without one can't mint.
       if (!capConfig.tool) continue
-      map[cap] = { server: serverName, tool: capConfig.tool }
+      map[cap] = { server: serverName, tool: capConfig.tool, issuer }
     }
   }
   return map
@@ -286,19 +322,59 @@ export async function executeWithGateway(input: {
     currency: payment.currency,
   })
 
-  // Find a settlement type we can fulfill
+  // Find a settlement type we can fulfill. Pick the first type that has a
+  // capability provider AND, when that type declares accepted issuers (COIN),
+  // whose provider's derived issuer origin is in the accepted list. Types with
+  // no issuer list (e.g. card) match on provider alone, as before.
   let matchedType: string | undefined
   let provider: CapabilityEntry | undefined
+  let issuerRejected = false
 
   for (const st of payment.settlementTypes) {
-    provider = findProviderForSettlement(st, capabilityMap)
-    if (provider) {
-      matchedType = st
-      break
+    const candidate = findProviderForSettlement(st, capabilityMap)
+    if (!candidate) continue
+    const acceptedIssuers = payment.issuersByType?.[st]
+    if (
+      acceptedIssuers &&
+      acceptedIssuers.length > 0 &&
+      !(candidate.issuer && acceptedIssuers.includes(candidate.issuer))
+    ) {
+      // A provider exists but its issuer isn't accepted by the merchant for
+      // this closed-loop type. Remember this and keep looking for another type.
+      log.warn("gateway: provider issuer not in accepted list for settlement type", {
+        settlementType: st,
+        providerIssuer: candidate.issuer,
+        acceptedIssuers,
+      })
+      issuerRejected = true
+      continue
     }
+    provider = candidate
+    matchedType = st
+    break
   }
 
   if (!matchedType || !provider) {
+    // Distinguish (b) "a provider exists but no accepted issuer matched" from
+    // (a) "no provider at all". For (b) we must NOT silently mint from an
+    // unaccepted issuer — that would defeat closed-loop COIN — so surface a
+    // gateway error result rather than the merchant's original payment-required.
+    if (issuerRejected) {
+      log.error("gateway: issuer not accepted by merchant", {
+        requested: payment.settlementTypes,
+        issuersByType: payment.issuersByType,
+        available: Object.keys(capabilityMap),
+      })
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Gateway error: a payment provider is available, but its issuer identity is not accepted by the merchant for the requested settlement type(s). No payment token was minted.",
+          },
+        ],
+        isError: true,
+      }
+    }
     log.error("gateway: no provider for any settlement type", {
       requested: payment.settlementTypes,
       available: Object.keys(capabilityMap),
