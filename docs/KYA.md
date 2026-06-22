@@ -47,12 +47,19 @@ When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
      that `authorization_grant_profiles_supported` advertises the KYA profile
      (`urn:ietf:params:oauth:grant-profile:kya`). If it doesn't, KYA is skipped.
 
-3. **Dynamic client registration (if needed)**
+3. **Consent gate (Sign in with Skyfire KYA)**
 
-- (Removed) This demo flow does not require Dynamic Client Registration.
+- If KYA is advertised, the first connect does **not** mint. OpenCode stops at
+  status `needs_kya_consent` and asks you to approve using your Skyfire KYA
+  identity for this server. Approving reconnects with `kyaConsent=true`, which is
+  what triggers the mint. (No Dynamic Client Registration is used in this flow.)
 
-4. **KYA assertion minted by Skyfire MCP issuer**
+4. **KYA assertion minted by the Skyfire MCP issuer**
 
+- The KYA issuer must be **enabled** (toggled on, hence connected) first —
+  connecting it validates its config and `skyfire-api-key`. If it isn't, the
+  connect fails asking you to enable it. This matches payments, which mint only
+  through a connected issuer.
 - OpenCode connects to the configured **KYA issuer** — the remote MCP server
   whose `capabilities` map includes `org.kyapay:kya` (the server's name is irrelevant;
   the example below uses `skyfire`) — and calls the configured tool, e.g.
@@ -87,7 +94,10 @@ When you connect an MCP server named `merchant-mcp`, OpenCode does (simplified):
 
 ### Key point: no browser redirect
 
-For KYA, the flow is **non-interactive** (no user browser step). If something opens an `/authorize` URL, it usually means KYA detection or the jwt-bearer exchange failed.
+KYA needs one in-app confirmation (the consent gate above), but **no browser
+redirect** — the mint and token exchange are non-interactive. If something opens
+an `/authorize` URL, it usually means KYA detection or the jwt-bearer exchange
+failed and OpenCode fell back to interactive OAuth.
 
 By default, if the server **advertises KYA** but no issuer is configured (or
 minting fails), OpenCode surfaces a clear failure rather than falling back to
@@ -120,70 +130,10 @@ rm ~/.local/share/opencode/mcp-auth.json
 
 ## Sequence diagram
 
-![alt text](kya+oauth+sequence+diagram.png)
-
-The full connect flow, including the issuer-skip, the advertisement gate, and the
-interactive fallback. Step IDs (B/C/D) map to the spec phases.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant A as Agent (OpenCode)
-    participant M as MCP server (merchant)
-    participant AS as Resource AS (OAuth)
-    participant I as KYA Issuer (Skyfire)
-
-    Note over A: connect(name)
-
-    alt server advertises org.kyapay:kya (it IS the issuer)
-        A->>M: connect with configured headers (e.g. skyfire-api-key)
-        Note over A,M: KYA preflight skipped — issuer authenticates itself
-    else normal remote server (trySilentKya)
-        Note over A,AS: Phase B — discovery
-        A->>M: POST /mcp (no Authorization) [B1]
-        M-->>A: 401 WWW-Authenticate, resource_metadata=… [B2]
-        A->>M: GET /.well-known/oauth-protected-resource [B3]
-        M-->>A: { authorization_servers:[AS], resource } [B4]
-        A->>AS: GET /.well-known/oauth-authorization-server [B5]
-        AS-->>A: { token_endpoint, authorization_grant_profiles_supported } [B6]
-
-        alt KYA advertised AND issuer configured
-            Note over A,I: Phase C — mint KYA assertion
-            A->>I: connect + tools/call <kya tool> (seller selector) [C1]
-            I-->>A: KYA JWT assertion [C2]
-            Note over A,AS: Phase D — exchange + use
-            A->>AS: POST /token grant_type=jwt-bearer & assertion=<JWT> [D1]
-            AS->>I: fetch JWKS, verify assertion signature
-            AS-->>A: { access_token (aud = MCP) } [D2]
-            A->>M: POST /mcp + Authorization: Bearer <access_token> [D3]
-            M-->>A: 200 OK + tools — connected [D4]
-        else KYA advertised, NO issuer configured
-            alt OPENCODE_KYA_INTERACTIVE_FALLBACK=1
-                Note over A: fall through to interactive (below)
-            else default
-                Note over A: status = failed<br/>("KYA supported but no issuer configured")
-            end
-        else KYA not advertised (or fallback enabled)
-            Note over A,AS: Spec §5.5 — interactive Authorization Code + PKCE
-            A->>AS: GET /authorize?response_type=code&code_challenge=… (browser)
-            AS-->>A: 302 → redirect_uri?code=… (loopback callback :19876)
-            A->>AS: POST /token grant_type=authorization_code & code_verifier [PKCE]
-            AS-->>A: { access_token }
-            A->>M: POST /mcp + Authorization: Bearer <access_token>
-            M-->>A: 200 OK + tools — connected
-        end
-    end
-```
-
-Notes:
-
-- The `connect` method runs the silent-KYA preflight up front; the auto-connect
-  path runs it from the 401 catch handler. Either way the B→C→D steps are the same.
-- The AS sets the access token's `aud` to the MCP server's canonical resource URI;
-  the MCP server validates it as a plain OAuth 2.1 resource server (no KYA awareness).
-- The interactive fallback's redirect lands on a loopback callback on the **server**
-  host, so it only completes when the browser and instance server share a machine
-  (unless a custom `oauth.redirectUri` is configured).
+The full connect flow — issuer self-skip, the consent gate, the issuer-enabled
+check, the B→C→D mint, and the interactive fallback — is in the technical spec:
+[KYA-TECH-SPEC.md](KYA-TECH-SPEC.md) §16. It lives there as a single Mermaid
+diagram so the two docs can't drift apart.
 
 ---
 
@@ -322,8 +272,8 @@ bun dev serve --port 4096 --log-level DEBUG --print-logs
 
 You can drive the connect/auth flow from any of three frontends. All of them
 ultimately issue the same `POST /mcp/<name>/connect` against an instance server
-and trigger the KYA preflight — they differ only in how the instance server is
-provided and where the interactive browser step (if any) lands.
+and run the same KYA detection + consent gate — they differ only in how the
+instance server is provided and where the interactive browser step (if any) lands.
 
 | Frontend | Instance server | Best for |
 | --- | --- | --- |
@@ -356,14 +306,16 @@ instance server and talks to it over HTTP.
    ```
 
 4. Open `http://localhost:3000`, select the project directory you started the
-   server against, then open the MCP dialog and connect `merchant-mcp`. This
-   issues `POST /mcp/merchant-mcp/connect` against the instance server and
-   triggers the KYA preflight.
+   server against, and open the MCP dialog. **Enable the `skyfire` issuer first**
+   (toggle it on, which validates its API key), then connect `merchant-mcp`. The
+   first connect to a KYA server shows the **"Sign in with Skyfire KYA"** consent
+   dialog (status `needs_kya_consent`); approving reconnects with `kyaConsent=true`
+   and mints the token.
 
-For a server already showing `needs_auth`, clicking it in the MCP dialog (or the
-status popover) calls `mcp.auth.authenticate`, which drives the **interactive**
-OAuth flow — it opens the browser on the **server** host and waits for the
-loopback callback.
+A server showing `needs_auth` (KYA not advertised, or the interactive fallback)
+instead calls `mcp.auth.authenticate` when clicked, which drives the
+**interactive** OAuth flow — it opens the browser on the **server** host and waits
+for the loopback callback.
 
 > Note: the silent KYA flow is fully non-interactive, so it works even when the
 > frontend is remote. The interactive flow, however, opens the browser on the
@@ -397,10 +349,11 @@ the box.
    ([packages/desktop/scripts/predev.ts](../packages/desktop/scripts/predev.ts)),
    then `electron-vite dev` launches the app window.
 
-4. In the app, open the project directory you configured, open the MCP dialog,
-   and connect `merchant-mcp`. The MCP dialog and status popover behave exactly
-   as in the web app (`connect` for a fresh server, `mcp.auth.authenticate` for
-   one showing `needs_auth`).
+4. In the app, open the project directory you configured and open the MCP dialog.
+   As in the web app, **enable the `skyfire` issuer first**, then connect
+   `merchant-mcp` — the first connect to a KYA server shows the "Sign in with
+   Skyfire KYA" consent dialog (`needs_kya_consent`), and approving mints the
+   token. A `needs_auth` server instead runs `mcp.auth.authenticate`.
 
 > **Pointing the desktop app at an external server (optional).** If you want the
 > desktop UI but also the verbose `--print-logs` output from a server you control,
