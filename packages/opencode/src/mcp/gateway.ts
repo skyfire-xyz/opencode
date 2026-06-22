@@ -242,8 +242,13 @@ export interface CapabilityEntry {
 }
 
 export interface CapabilityMap {
-  /** Maps a settlement type prefix (e.g. "org.kyapay:pay") to its provider entry. */
-  [capability: string]: CapabilityEntry
+  /**
+   * Maps a settlement type prefix (e.g. "org.kyapay:pay") to the providers that
+   * can fulfill it. There can be more than one when several configured servers
+   * declare the same capability with different issuer identities; the gateway
+   * picks the one whose issuer the merchant accepts.
+   */
+  [capability: string]: CapabilityEntry[]
 }
 
 export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { enabled: boolean }>): CapabilityMap {
@@ -267,27 +272,30 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     }
     for (const [cap, capConfig] of Object.entries(info.capabilities)) {
       // `tool` is optional in the schema; an entry without one can't mint.
-      if (!capConfig.tool) continue
-      map[cap] = { server: serverName, tool: capConfig.tool, issuer }
+      if (!capConfig.tool)
+        continue
+        // Append rather than overwrite: multiple servers may declare the same
+        // capability (different issuers), and we want all of them as candidates.
+      ;(map[cap] ??= []).push({ server: serverName, tool: capConfig.tool, issuer })
     }
   }
   return map
 }
 
 /**
- * Find the provider entry for a given settlement type.
+ * Find the candidate provider entries for a given settlement type.
  *
  * Settlement types look like "org.kyapay:pay:coin". Capabilities in config
  * are prefixes like "org.kyapay:pay" or "org.kyapay". We match the most
- * specific prefix first.
+ * specific prefix first and return every provider registered under it.
  */
-function findProviderForSettlement(settlementType: string, capabilityMap: CapabilityMap): CapabilityEntry | undefined {
+function findProvidersForSettlement(settlementType: string, capabilityMap: CapabilityMap): CapabilityEntry[] {
   const parts = settlementType.split(":")
   for (let i = parts.length; i > 0; i--) {
     const prefix = parts.slice(0, i).join(":")
     if (capabilityMap[prefix]) return capabilityMap[prefix]
   }
-  return undefined
+  return []
 }
 
 // ---------------------------------------------------------------------------
@@ -331,25 +339,27 @@ export async function executeWithGateway(input: {
   let issuerRejected = false
 
   for (const st of payment.settlementTypes) {
-    const candidate = findProviderForSettlement(st, capabilityMap)
-    if (!candidate) continue
+    const candidates = findProvidersForSettlement(st, capabilityMap)
+    if (candidates.length === 0) continue
     const acceptedIssuers = payment.issuersByType?.[st]
-    if (
-      acceptedIssuers &&
-      acceptedIssuers.length > 0 &&
-      !(candidate.issuer && acceptedIssuers.includes(candidate.issuer))
-    ) {
-      // A provider exists but its issuer isn't accepted by the merchant for
-      // this closed-loop type. Remember this and keep looking for another type.
-      log.warn("gateway: provider issuer not in accepted list for settlement type", {
-        settlementType: st,
-        providerIssuer: candidate.issuer,
-        acceptedIssuers,
-      })
-      issuerRejected = true
-      continue
+    if (acceptedIssuers && acceptedIssuers.length > 0) {
+      // Closed-loop type: scan the candidates for one whose derived issuer
+      // origin the merchant accepts. Only that provider may mint.
+      const accepted = candidates.find((c) => c.issuer && acceptedIssuers.includes(c.issuer))
+      if (!accepted) {
+        log.warn("gateway: no candidate provider has an accepted issuer for settlement type", {
+          settlementType: st,
+          candidateIssuers: candidates.map((c) => c.issuer),
+          acceptedIssuers,
+        })
+        issuerRejected = true
+        continue
+      }
+      provider = accepted
+    } else {
+      // No issuer constraint (e.g. card): the first candidate fulfills it.
+      provider = candidates[0]
     }
-    provider = candidate
     matchedType = st
     break
   }

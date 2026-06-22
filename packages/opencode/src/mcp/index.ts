@@ -436,7 +436,9 @@ function trySilentKya(args: {
           : ({ minted: false, kyaAdvertised: false } satisfies KyaMintResult),
       )
     }),
-    Effect.tap((result) => Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result }))),
+    Effect.tap((result) =>
+      Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result })),
+    ),
   )
 }
 
@@ -449,7 +451,10 @@ function listTools(key: string, client: MCPClient, timeout: number) {
     Effect.catch((error) => {
       if (!isOutputSchemaValidationError(error)) return Effect.fail(error)
 
-      log.warn("[listTools] failed to validate MCP tool output schemas, retrying without output schema validation", { key, error })
+      log.warn("[listTools] failed to validate MCP tool output schemas, retrying without output schema validation", {
+        key,
+        error,
+      })
       return Effect.tryPromise({
         try: () =>
           client.request({ method: "tools/list" }, TolerantListToolsResultSchema, {
@@ -1092,7 +1097,7 @@ export const layer = Layer.effect(
       // (token issuers). The gateway reaches them directly via s.clients, so
       // their tools must NOT be exposed to the agent — otherwise the LLM could
       // call create-pay-token / find-sellers itself and bypass the gateway.
-      const providerServers = new Set(Object.values(capabilityMap).map((e) => e.server))
+      const providerServers = new Set(Object.values(capabilityMap).flatMap((entries) => entries.map((e) => e.server)))
 
       const connectedClients = Object.entries(s.clients).filter(
         ([clientName]) => s.status[clientName]?.status === "connected" && !providerServers.has(clientName),
@@ -1285,7 +1290,11 @@ export const layer = Layer.effect(
         return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
       }
 
-      log.info("[authenticate] opening browser for oauth", { mcpName, url: result.authorizationUrl, state: result.oauthState })
+      log.info("[authenticate] opening browser for oauth", {
+        mcpName,
+        url: result.authorizationUrl,
+        state: result.oauthState,
+      })
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
 
