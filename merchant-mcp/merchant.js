@@ -28,11 +28,21 @@ import { createRemoteJWKSet, jwtVerify } from "jose"
 // Network / OAuth configuration
 // ---------------------------------------------------------------------------
 
-const mcpPort = Number(process.env.MOCK_MCP_PORT ?? "8787")
-const authPort = Number(process.env.MOCK_AUTH_PORT ?? "8788")
+// Single listen port. Render injects PORT; locally fall back to the old MCP port.
+const port = Number(process.env.PORT ?? process.env.MOCK_MCP_PORT ?? "8787")
+// Bind 0.0.0.0 so a cloud load balancer (Render) can reach us; localhost-only by default.
+const host = process.env.HOST ?? "0.0.0.0"
 
-const authOrigin = `http://127.0.0.1:${authPort}`
-const mcpOrigin = `http://127.0.0.1:${mcpPort}`
+// Public base URL baked into all OAuth / RFC-9728 discovery metadata. On Render this is
+// the injected RENDER_EXTERNAL_URL (https://...onrender.com); locally it falls back to the
+// loopback origin. The merchant resource and the OAuth AS now share one origin (one port).
+const publicBaseUrl = (
+  process.env.PUBLIC_BASE_URL ??
+  process.env.RENDER_EXTERNAL_URL ??
+  `http://127.0.0.1:${port}`
+).replace(/\/$/, "")
+const authOrigin = publicBaseUrl
+const mcpOrigin = publicBaseUrl
 
 const mockSigningSecret = process.env.MOCK_OAUTH_JWT_SECRET ?? "mock-oauth-dev-secret"
 const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://app-qa.skyfire.xyz/.well-known/jwks.json"
@@ -424,10 +434,10 @@ function callMerchantTool(name, args, meta) {
 }
 
 // ---------------------------------------------------------------------------
-// OAuth Authorization Server (port 8788)
+// OAuth Authorization Server
 // ---------------------------------------------------------------------------
 
-const authServer = http.createServer((req, res) => {
+function authHandler(req, res) {
   const url = new URL(req.url ?? "/", authOrigin)
   console.log("authServer: request", { method: req.method, path: url.pathname })
 
@@ -569,13 +579,13 @@ const authServer = http.createServer((req, res) => {
   }
 
   return text(res, 404, "Not found")
-})
+}
 
 // ---------------------------------------------------------------------------
-// Protected MCP resource (port 8787)
+// Protected MCP resource
 // ---------------------------------------------------------------------------
 
-const mcpServer = http.createServer((req, res) => {
+function mcpHandler(req, res) {
   const url = new URL(req.url ?? "/", mcpOrigin)
   console.log("mcpServer: request", {
     method: req.method,
@@ -682,16 +692,35 @@ const mcpServer = http.createServer((req, res) => {
   }
 
   return text(res, 404, "Not found")
+}
+
+// ---------------------------------------------------------------------------
+// Single HTTP server. A cloud host (Render) gives one public port on 0.0.0.0,
+// so we serve both roles from one listener and route by path: OAuth AS paths go
+// to authHandler, everything else (/mcp, resource metadata) to mcpHandler.
+// ---------------------------------------------------------------------------
+
+const AUTH_PATHS = new Set([
+  "/.well-known/oauth-authorization-server",
+  "/.well-known/openid-configuration",
+  "/register",
+  "/token",
+  "/oauth/token",
+  "/authorize",
+])
+
+const server = http.createServer((req, res) => {
+  const url = new URL(req.url ?? "/", publicBaseUrl)
+  if (url.pathname === "/") return text(res, 200, "ok") // health check (Render)
+  if (AUTH_PATHS.has(url.pathname)) return authHandler(req, res)
+  return mcpHandler(req, res)
 })
 
-authServer.listen(authPort, "127.0.0.1", () => {
-  console.log(`merchant OAuth Auth Server (KYA) listening: ${authOrigin}`)
-  console.log(`  OAuth metadata:  ${authOrigin}/.well-known/oauth-authorization-server`)
-  console.log(`  Token endpoint:  ${authOrigin}/token`)
-})
-
-mcpServer.listen(mcpPort, "127.0.0.1", () => {
-  console.log(`merchant MCP server listening: ${mcpOrigin}`)
+server.listen(port, host, () => {
+  console.log(`merchant (MCP + KYA OAuth) listening on ${host}:${port}`)
+  console.log(`  Public base:     ${publicBaseUrl}`)
   console.log(`  MCP endpoint:    ${mcpOrigin}/mcp`)
   console.log(`  Resource meta:   ${mcpOrigin}/.well-known/oauth-protected-resource`)
+  console.log(`  OAuth metadata:  ${authOrigin}/.well-known/oauth-authorization-server`)
+  console.log(`  Token endpoint:  ${authOrigin}/token`)
 })
