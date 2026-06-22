@@ -15,17 +15,16 @@
 </style></head>
 <body>
 <h1>KYA + OAuth + MCP Integration — Technical Specification</h1>
-<p><strong>Status:</strong> Implemented
-<strong>Audience:</strong> Engineers working on OpenCode&#39;s MCP transport, auth, and payment-gateway layers.
-<strong>Scope:</strong> How OpenCode authenticates to protected MCP servers using the KYA
-(Know Your Agent) grant profile, how it falls back to interactive OAuth, how the
-payment gateway (<code>org.kyapay:pay</code>) reuses the same capability machinery, and the
-exact code paths, data structures, and network exchanges involved.</p>
+<p>How OpenCode authenticates to protected MCP servers with the KYA (Know Your
+Agent) grant profile, when it falls back to interactive OAuth, and how the
+payment gateway (<code>org.kyapay:pay</code>) reuses the same capability machinery. It
+covers the code paths, data structures, and network exchanges involved, for
+engineers working on the MCP transport, auth, and gateway layers.</p>
 <blockquote>
-<p>This document is the design/architecture reference. For a hands-on runbook
-(how to start the mock servers, connect from the web UI, read the logs), see
-<code>KYA.md</code>. Where the two overlap, this spec is authoritative on
-<em>behavior</em> and KYA.md is authoritative on <em>operation</em>.</p>
+<p>This is the design reference. For a hands-on runbook (starting the mock
+servers, connecting from the web UI, reading the logs), see <code>KYA.md</code>.
+Where the two overlap, this doc is authoritative on behavior and KYA.md on
+operation.</p>
 </blockquote>
 <hr>
 <h2>1. Purpose &amp; Background</h2>
@@ -125,7 +124,7 @@ OpenCode falls back to the interactive flow.</p>
 </thead>
 <tbody><tr>
 <td><code>packages/opencode/src/mcp/index.ts</code></td>
-<td>The <code>MCP</code> Effect service. Owns connection lifecycle, the silent-KYA orchestration (<code>trySilentKya</code>), transport selection, status state, and the interactive-auth entry points (<code>startAuth</code>/<code>authenticate</code>/<code>finishAuth</code>).</td>
+<td>The <code>MCP</code> Effect service. Owns connection lifecycle, KYA detection (<code>detectKyaSupport</code>), the consent + issuer gates, the mint orchestration (<code>trySilentKya</code>), transport selection, status state, and the interactive-auth entry points (<code>startAuth</code>/<code>authenticate</code>/<code>finishAuth</code>).</td>
 </tr>
 <tr>
 <td><code>packages/opencode/src/mcp/kya.ts</code></td>
@@ -164,8 +163,8 @@ OpenCode falls back to the interactive flow.</p>
 <td>Local mock of the protected MCP server <strong>and</strong> Resource AS, for end-to-end testing.</td>
 </tr>
 <tr>
-<td><code>packages/app/src/components/dialog-select-mcp.tsx</code>, <code>status-popover-body.tsx</code></td>
-<td>Web UI entry points that call <code>connect</code> / <code>mcp.auth.authenticate</code>.</td>
+<td><code>packages/app/src/components/dialog-select-mcp.tsx</code>, <code>status-popover-body.tsx</code>, <code>dialog-kya-consent.tsx</code></td>
+<td>Web UI entry points: toggle <code>connect</code>/<code>disconnect</code>, drive <code>mcp.auth.authenticate</code>, and the Skyfire KYA consent dialog (reconnect with <code>kyaConsent</code>).</td>
 </tr>
 </tbody></table>
 <h3>3.2 High-level data flow</h3>
@@ -241,25 +240,25 @@ without a <code>tool</code> can&#39;t mint and is skipped by the gateway.</p>
   &quot;mcp&quot;: {
     &quot;merchant&quot;: {
       &quot;type&quot;: &quot;remote&quot;,
-      &quot;url&quot;: &quot;https://merchant.example.com/mcp&quot;
+      &quot;url&quot;: &quot;https://merchant.example.com/mcp&quot;,
     },
     &quot;skyfire&quot;: {
       &quot;type&quot;: &quot;remote&quot;,
       &quot;url&quot;: &quot;http://mcp.skyfire.xyz/mcp&quot;,
       &quot;capabilities&quot;: {
         &quot;org.kyapay:kya&quot;: { &quot;tool&quot;: &quot;create-kya-token&quot; },
-        &quot;org.kyapay:pay&quot;: { &quot;tool&quot;: &quot;create-pay-token&quot; }
+        &quot;org.kyapay:pay&quot;: { &quot;tool&quot;: &quot;create-pay-token&quot; },
       },
       &quot;headers&quot;: {
-        &quot;skyfire-api-key&quot;: &quot;{env:SKYFIRE_API_KEY}&quot;
-      }
-    }
-  }
+        &quot;skyfire-api-key&quot;: &quot;{env:SKYFIRE_API_KEY}&quot;,
+      },
+    },
+  },
 }
 </code></pre>
 <p>The issuer (<code>skyfire</code>) authenticates itself via its <code>skyfire-api-key</code> header. It
-is <strong>never</strong> subjected to the KYA preflight (you don&#39;t mint a KYA token to talk
-to the KYA issuer). See §7.1.</p>
+never enters the KYA branch (you don&#39;t mint a KYA token to talk to the KYA
+issuer). See §7.1.</p>
 <blockquote>
 <p><strong>Security:</strong> API keys must never be committed. Use <code>{env:SKYFIRE_API_KEY}</code>
 interpolation and export the secret at runtime.</p>
@@ -274,7 +273,7 @@ entry&#39;s <code>capabilities</code> either:</p>
 <li>(array form) includes the string <code>&quot;org.kyapay:kya&quot;</code>.</li>
 </ul>
 <p><code>KYA_CAPABILITY = &quot;org.kyapay:kya&quot;</code> is the single source of truth
-(<code>kya.ts:4</code>).</p>
+(<code>kya.ts</code>).</p>
 <h3>5.2 Selecting the issuer</h3>
 <p><code>kyaIssuerFromConfig</code> scans the whole
 <code>mcp</code> config and returns the <strong>first remote server</strong> that (a) advertises the KYA
@@ -302,7 +301,7 @@ record form only. This drives both:</p>
 any server that appears as a capability provider is excluded from the toolset
 exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 <code>create-kya-token</code> directly and bypass the gateway
-(<code>index.ts:1096-1104</code>).</li>
+(<code>index.ts</code>).</li>
 </ul>
 <hr>
 <h2>6. Connection Lifecycle &amp; Status Model</h2>
@@ -328,6 +327,10 @@ exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 <td>Configured but never connected this session.</td>
 </tr>
 <tr>
+<td><code>needs_kya_consent</code></td>
+<td>The server advertises KYA, but the user hasn&#39;t approved a Skyfire KYA sign-in. Reconnect with consent.</td>
+</tr>
+<tr>
 <td><code>needs_auth</code></td>
 <td>Auth required; interactive OAuth available (KYA not advertised, or fallback enabled).</td>
 </tr>
@@ -345,35 +348,43 @@ exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 (<code>MCP.state</code>). A connection (and
 any KYA it triggers) happens on-demand via <code>MCP.connect(name)</code> when the user
 enables a server in the UI / CLI / API.</p>
-<h3>6.3 Two entry points into KYA</h3>
-<p>There are <strong>two</strong> places the silent KYA flow can run, and they must produce the
-same B→C→D behavior:</p>
+<h3>6.3 Entry point, consent, and the issuer gate</h3>
+<p>KYA runs in one place: the <code>connectRemote</code> 401 catch handler in
+<code>index.ts</code>. When a StreamableHTTP connect
+returns <code>UnauthorizedError</code> and the guards in §7.1 pass, that handler drives
+detection, the consent gate, the issuer check, and the mint. <code>MCP.connect(name, { kyaConsent })</code>
+does no KYA work itself; it just forwards the consent flag down to
+<code>createAndStore</code> → <code>create</code> → <code>connectRemote</code>.</p>
+<p>Connecting a KYA-protected server therefore takes two passes:</p>
 <ol>
-<li><p><strong><code>MCP.connect</code> preflight</strong> (<code>index.ts:1036-1076</code>) —
-runs <code>trySilentKya</code> <em>up front</em>, before attempting transport connect, for any
-remote server that is not itself the issuer. If KYA is advertised but minting
-fails, it sets <code>failed</code> and stops (no interactive fallback in the demo
-default).</p>
+<li><p><strong>First connect (no consent).</strong> The 401 handler calls <code>detectKyaSupport</code>
+(§7.2). If the server advertises KYA, the handler stops at
+<code>needs_kya_consent</code> rather than minting — KYA carries the agent&#39;s identity, so
+the user approves it explicitly (&quot;Sign in with Skyfire KYA&quot;) before any token
+is minted.</p>
 </li>
-<li><p><strong><code>connectRemote</code> 401 catch handler</strong> (<code>index.ts:732-782</code>) —
-the auto-connect path (e.g. when <code>createAndStore</code> runs without the preflight)
-catches the <code>UnauthorizedError</code> from the StreamableHTTP attempt and <em>then</em>
-runs <code>trySilentKya</code>, retrying the transport on success.</p>
+<li><p><strong>Reconnect with consent.</strong> The UI/API calls connect again with
+<code>kyaConsent=true</code>. This time the handler passes the consent check and proceeds
+to the <strong>issuer gate</strong>: the configured KYA issuer must itself be enabled
+(toggled on, hence connected). If it isn&#39;t, the connect fails with a message
+telling the user to enable it — connecting the issuer is what validates its
+config and API key, and this keeps KYA from minting through an issuer the user
+never enabled. This mirrors the payment gateway, which only mints through a
+connected provider (§12). With the issuer enabled, the handler runs
+<code>trySilentKya</code> (§7) and retries the transport on success.</p>
 </li>
 </ol>
-<p>Both call the identical <code>trySilentKya</code>.</p>
 <h3>6.4 Transport selection</h3>
 <p><code>connectRemote</code> tries <strong>StreamableHTTP first, then SSE</strong>
-(<code>index.ts:669-684</code>). Important
+(<code>index.ts</code>). Important
 nuances:</p>
 <ul>
 <li>A 401 on the StreamableHTTP attempt sets <code>stopTransportFallback = true</code>
-(<code>index.ts:714</code>) — the server clearly
+(<code>index.ts</code>) — the server clearly
 speaks HTTP and just needs auth, so we <strong>never</strong> fall back to SSE (which would
 404 and mask the real auth/KYA failure).</li>
-<li>KYA minting is only attempted on the <strong>StreamableHTTP</strong> branch and only once
-(<code>!kyaRetried</code>) and only when the server is not the issuer (<code>!hasKyaCapability(mcp)</code>)
-(<code>index.ts:735</code>).</li>
+<li>KYA is only attempted on the <strong>StreamableHTTP</strong> branch, once per connect, and
+only when the §7.1 guards pass.</li>
 <li>A transport cannot be reused after a failed connect, so the post-KYA retry
 builds a <strong>fresh</strong> StreamableHTTP transport
 (<code>freshStreamable</code>); the auth
@@ -384,21 +395,30 @@ provider&#39;s <code>tokens()</code> now returns the token <code>trySilentKya</c
 <p><code>trySilentKya</code> is an Effect that
 returns a <code>KyaMintResult</code>:</p>
 <pre><code class="language-ts">type KyaMintResult =
-  | { minted: true;  kyaAdvertised: true }                 // success
-  | { minted: false; kyaAdvertised: false }                // KYA not advertised → caller may fall back
-  | { minted: false; kyaAdvertised: true; error: string }  // KYA advertised but minting failed → hard fail
+  | { minted: true; kyaAdvertised: true } // success
+  | { minted: false; kyaAdvertised: false } // KYA not advertised → caller may fall back
+  | { minted: false; kyaAdvertised: true; error: string } // KYA advertised but minting failed → hard fail
 </code></pre>
-<p>The <code>kyaAdvertised</code> flag is the linchpin of the gating logic (§9): it tells the
-caller whether a failure should hard-fail or fall through to interactive OAuth.</p>
-<h3>7.1 Issuer self-exclusion</h3>
-<p>Before any KYA work, callers check <code>!hasKyaCapability(mcp)</code>. The issuer
-authenticates via its own configured headers (<code>skyfire-api-key</code>), so it must
-never be put through the KYA preflight — otherwise OpenCode would try to mint a
-KYA token <em>in order to talk to the KYA minter</em>, a chicken-and-egg deadlock. See
-<code>connect</code> and
-<code>connectRemote</code>.</p>
+<p>The <code>kyaAdvertised</code> flag drives the gating logic (§9): it tells the caller
+whether a failure should hard-fail or fall through to interactive OAuth.</p>
+<h3>7.1 When the KYA branch runs (guards)</h3>
+<p>The 401 handler only enters the KYA branch when <strong>all</strong> of these hold:</p>
+<ul>
+<li>the failing attempt is <strong>StreamableHTTP</strong> (not SSE);</li>
+<li>KYA hasn&#39;t already been retried this connect (<code>!kyaRetried</code>);</li>
+<li>the server does <strong>not</strong> itself advertise KYA (<code>!hasKyaCapability(mcp)</code>) — the
+issuer authenticates with its own <code>skyfire-api-key</code> header, so minting a KYA
+token just to reach the KYA minter would be a chicken-and-egg deadlock;</li>
+<li>OAuth isn&#39;t explicitly disabled (<code>oauth !== false</code>);</li>
+<li>the server has no static <code>headers</code> configured — a server you authenticate with
+your own header/API key isn&#39;t a KYA target.</li>
+</ul>
+<p>Servers that fail any guard skip KYA entirely and follow the ordinary
+connect/auth path.</p>
 <h3>7.2 Phase B — Discovery &amp; advertisement gate</h3>
-<p><code>index.ts:214-264</code>:</p>
+<p>Discovery lives in <code>detectKyaSupport</code> (<code>index.ts</code>),
+shared by both the consent gate in the 401 handler (§6.3) and <code>trySilentKya</code>&#39;s
+mint preflight. It returns <code>{ supportsKya, authServer, sellerServiceId }</code>:</p>
 <ol>
 <li><p><strong>B1–B2 probe.</strong> <code>probeResourceMetadataUrl</code>
 does <code>POST &lt;serverUrl&gt;</code> with a minimal JSON-RPC <code>initialize</code> body and no
@@ -413,7 +433,7 @@ response is expected to contain:</p>
 <ul>
 <li><code>authorization_servers: string[]</code> → the Resource AS origin (<code>authServers[0]</code>).</li>
 <li>optionally <code>seller_service_id</code> → a seller identity the resource advertises
-for itself (<code>index.ts:233-235</code>).
+for itself (<code>index.ts</code>).
 If there&#39;s no auth server, <code>supportsKya: false</code> and the flow short-circuits.</li>
 </ul>
 </li>
@@ -429,18 +449,18 @@ advertises the KYA profile via
 <p><strong>The advertisement gate:</strong> if <code>profiles</code> does not include <code>kya</code>,
 <code>supportsKya</code> is false and <code>trySilentKya</code> returns
 <code>{ minted: false, kyaAdvertised: false }</code> — KYA is skipped and the caller may
-fall back to interactive OAuth (<code>index.ts:266-269</code>).
+fall back to interactive OAuth (<code>index.ts</code>).
 Once we pass this gate, the internal <code>advertised</code> flag is set to <code>true</code>
-(<code>index.ts:270</code>), which guarantees any
+(<code>index.ts</code>), which guarantees any
 <em>subsequent</em> thrown failure is reported as <code>kyaAdvertised: true</code> (see §7.6).</p>
 <blockquote>
 <p>All of Phase B is wrapped in a <code>try/catch</code> that resolves to
-<code>{ supportsKya: false }</code> on error (<code>index.ts:263</code>),
+<code>{ supportsKya: false }</code> on error (<code>index.ts</code>),
 so a discovery/network failure degrades to &quot;KYA not advertised,&quot; not a hard
 error.</p>
 </blockquote>
 <h3>7.3 Seller selector resolution</h3>
-<p><code>index.ts:272-282</code>. Priority:</p>
+<p><code>index.ts</code>. Priority:</p>
 <ol>
 <li><strong><code>OPENCODE_KYA_SELLER_SERVICE_ID</code></strong> env override → <code>{ sellerServiceId }</code>.</li>
 <li><strong><code>seller_service_id</code></strong> advertised by the protected-resource metadata → <code>{ sellerServiceId }</code>.</li>
@@ -454,16 +474,16 @@ directory can&#39;t resolve localhost). The recognized &quot;local&quot; set: <c
 </ol>
 <p>The Skyfire <code>create-kya-token</code> tool requires <strong>exactly one</strong> seller selector.</p>
 <h3>7.4 Phase C — Mint the KYA assertion</h3>
-<p><code>index.ts:284-348</code>:</p>
+<p><code>index.ts</code>:</p>
 <ol>
 <li>If <code>args.issuer</code> is undefined → return
 <code>{ minted: false, kyaAdvertised: true, error: &quot;KYA supported but no issuer configured…&quot; }</code>.</li>
 <li>Connect to the issuer via a <code>StreamableHTTPClientTransport</code> carrying
 <code>issuer.config.headers</code> (the <code>skyfire-api-key</code>)
-(<code>index.ts:302-310</code>).</li>
+(<code>index.ts</code>).</li>
 <li><code>callTool({ name: issuer.tool, arguments: sellerArg })</code>, with the client
 closed afterward via <code>Effect.ensuring</code>
-(<code>index.ts:320-323</code>).</li>
+(<code>index.ts</code>).</li>
 <li>Concatenate the text content of the result and extract the JWT with
 <code>extractJwtFromText</code> — a regex
 matching a three-segment <code>xxx.yyy.zzz</code> token. (The Skyfire tool currently
@@ -471,18 +491,18 @@ returns a human-readable string like
 <code>&quot;Creation of KYA token for &lt;id&gt; is complete: &lt;jwt&gt;&quot;</code>.) No JWT → error result.</li>
 </ol>
 <h3>7.5 Phase D — Exchange &amp; store</h3>
-<p><code>index.ts:350-420</code>:</p>
+<p><code>index.ts</code>:</p>
 <ol>
 <li><p><strong>Re-fetch the AS metadata for the <code>token_endpoint</code></strong>
-(<code>index.ts:350-372</code>). Missing
+(<code>index.ts</code>). Missing
 <code>token_endpoint</code> → error result.</p>
 <blockquote>
 <p><strong>Why re-fetch?</strong> Phase B (§7.2) already fetched the same AS metadata, but it
-only kept <code>supportsKya</code> and the <code>authServer</code> origin from it — not the
-<code>token_endpoint</code>. Phase D therefore re-fetches <code>&lt;authServer&gt;/.well-known/oauth-authorization-server</code>
-to read <code>token_endpoint</code>. This is a redundant round-trip (the two phases don&#39;t
-share the parsed metadata object); it&#39;s correctness-neutral but worth knowing
-if you&#39;re optimizing or tracing network calls.</p>
+only kept <code>supportsKya</code> and the <code>authServer</code> origin from it, not the
+<code>token_endpoint</code>. Phase D re-fetches <code>&lt;authServer&gt;/.well-known/oauth-authorization-server</code>
+to read <code>token_endpoint</code>. The two phases don&#39;t share the parsed metadata
+object, so this is a redundant round-trip: harmless, but visible when you
+trace network calls.</p>
 </blockquote>
 </li>
 <li><p><code>POST &lt;token_endpoint&gt;</code> with
@@ -491,7 +511,7 @@ if you&#39;re optimizing or tracing network calls.</p>
 assertion=&lt;kya_jwt&gt;
 </code></pre>
 <p>A non-2xx throws <code>OAuth token exchange failed (&lt;status&gt;): &lt;body&gt;</code>
-(<code>index.ts:381-392</code>).</p>
+(<code>index.ts</code>).</p>
 <blockquote>
 <p><strong>The exchange is client-unauthenticated.</strong> The request carries <em>only</em>
 <code>grant_type</code> and <code>assertion</code> — there is <strong>no</strong> <code>client_id</code>/<code>client_secret</code>, no
@@ -507,7 +527,7 @@ the AS assigns a default scope (the mock uses <code>mcp</code>).</p>
 <code>expires_in</code>, <code>scope</code>, and possibly <code>refresh_token</code>, the silent path persists
 only the access token —
 <code>{ accessToken, refreshToken: undefined, expiresAt: undefined, scope: undefined }</code>
-(<code>index.ts:409-413</code>). See
+(<code>index.ts</code>). See
 §7.7 for the consequences (no local expiry tracking, no refresh).</p>
 </blockquote>
 </li>
@@ -531,7 +551,7 @@ vice versa. Keep them in sync when changing the exchange contract.</p>
 </blockquote>
 <h3>7.6 Failure semantics &amp; the <code>advertised</code> flag</h3>
 <p>The whole generator is wrapped in <code>Effect.catch</code>
-(<code>index.ts:421-436</code>):</p>
+(<code>index.ts</code>):</p>
 <ul>
 <li>If the <code>advertised</code> flag was set (we passed the §7.2 gate), any thrown failure
 (issuer connect, tool call, token exchange) becomes
@@ -540,8 +560,8 @@ KYA failure must <strong>not</strong> silently degrade to interactive OAuth.</li
 <li>Otherwise → <code>{ minted: false, kyaAdvertised: false }</code>.</li>
 </ul>
 <p>Both BEGIN/END of the flow are logged with <code>===== KYA auth flow BEGIN/END =====</code>
-banners (<code>index.ts:208</code>,
-<code>index.ts:434</code>).</p>
+banners (<code>index.ts</code>,
+<code>index.ts</code>).</p>
 <h3>7.7 Lifetime of a KYA-minted token (no local expiry, no refresh)</h3>
 <p>Because Phase D stores <code>expiresAt: undefined</code> and <code>refreshToken: undefined</code>:</p>
 <ul>
@@ -563,25 +583,25 @@ the MCP SDK&#39;s <code>OAuthClientProvider</code>. It is used for both the auto
 transport and the interactive <code>startAuth</code> flow.</p>
 <h3>8.1 URL/origin normalization</h3>
 <p>The constructor normalizes <code>serverUrl</code> to its <strong>origin</strong>
-(<code>oauth-provider.ts:44-49</code>).
+(<code>oauth-provider.ts</code>).
 The SDK treats the provider&#39;s server URL as the <em>origin</em> where <code>/.well-known/*</code>
 lives, but MCP transport URLs often include the <code>/mcp</code> path. Normalizing to the
 origin ensures (a) discovery doesn&#39;t 404 on <code>/mcp/.well-known/*</code>, and (b) tokens
 stored out-of-band by KYA (keyed by origin) are matched by <code>getForUrl()</code> here.</p>
 <h3>8.2 Token &amp; client storage</h3>
 <ul>
-<li><code>tokens()</code> (<code>oauth-provider.ts:162-176</code>)
+<li><code>tokens()</code> (<code>oauth-provider.ts</code>)
 reads via <code>auth.getForUrl(name, origin)</code>. <code>getForUrl</code>
-(<code>auth.ts:74-80</code>) returns the
+(<code>auth.ts</code>) returns the
 entry <strong>only if its stored <code>serverUrl</code> matches</strong> — preventing token reuse
 across a changed URL.</li>
 <li><code>saveTokens()</code> persists access/refresh/expiry/scope.</li>
-<li><code>clientInformation()</code> (<code>oauth-provider.ts:113-141</code>)
+<li><code>clientInformation()</code> (<code>oauth-provider.ts</code>)
 prefers a configured <code>clientId</code>, else a stored dynamically-registered client
 (re-registering if the secret expired).</li>
 <li><code>saveClientInformation()</code> stores DCR results.</li>
 <li><code>codeVerifier</code> / <code>state</code> are persisted for PKCE + CSRF. <code>state()</code>
-(<code>oauth-provider.ts:215-230</code>)
+(<code>oauth-provider.ts</code>)
 is a <em>generator</em>: the SDK calls it to both read and mint state, so it creates a
 random 32-byte hex value if none is saved.</li>
 </ul>
@@ -593,7 +613,7 @@ confusing &quot;Invalid OAuth error response&quot; when an MCP origin returns a 
 404 for <code>/.well-known/*</code>. It&#39;s best-effort and called from <code>clientInformation()</code>.</p>
 <h3>8.4 Grant-profile hooks are intentionally inert</h3>
 <p><code>getTokensForMetadata()</code> and <code>prepareTokenRequest()</code>
-(<code>oauth-provider.ts:254-276</code>)
+(<code>oauth-provider.ts</code>)
 <strong>return <code>undefined</code> by design</strong>. The KYA jwt-bearer exchange is <strong>not</strong> driven
 through the SDK&#39;s grant-profile hooks; it runs out-of-band in <code>trySilentKya</code>,
 which discovers, mints, exchanges, and <code>saveTokens()</code> <em>before</em> the transport is
@@ -602,14 +622,15 @@ SDK fall back to interactive <code>authorization_code</code> when KYA is unavail
 <code>getTokensForMetadata</code> still logs the advertised profiles for diagnostics.</p>
 <hr>
 <h2>9. Decision Matrix (Gating Logic)</h2>
-<p>This is the central behavioral contract. Given an auth-required remote server
-(not the issuer):</p>
+<p>For an auth-required remote server that passes the §7.1 guards, the 401 handler
+resolves in this order. &quot;Usable issuer&quot; means an issuer is configured <strong>and</strong>
+enabled (connected).</p>
 <table>
 <thead>
 <tr>
 <th>KYA advertised?</th>
-<th>Issuer configured?</th>
-<th>Mint result</th>
+<th>Consent given?</th>
+<th>Usable issuer?</th>
 <th><code>OPENCODE_KYA_INTERACTIVE_FALLBACK</code></th>
 <th>Outcome</th>
 </tr>
@@ -619,54 +640,61 @@ SDK fall back to interactive <code>authorization_code</code> when KYA is unavail
 <td>—</td>
 <td>—</td>
 <td>—</td>
-<td><strong>Interactive OAuth</strong> (<code>needs_auth</code>) — always</td>
+<td><strong>Interactive OAuth</strong> (<code>needs_auth</code>)</td>
 </tr>
 <tr>
 <td>Yes</td>
+<td>no</td>
+<td>—</td>
+<td>—</td>
+<td><strong><code>needs_kya_consent</code></strong> (await user approval)</td>
+</tr>
+<tr>
 <td>Yes</td>
-<td>success</td>
+<td>yes</td>
+<td>yes → mint ok</td>
 <td>—</td>
 <td><strong>Connected</strong> via Bearer</td>
 </tr>
 <tr>
 <td>Yes</td>
-<td>Yes</td>
-<td>failure</td>
+<td>yes</td>
+<td>yes → mint fails</td>
 <td>—</td>
-<td><strong><code>failed</code></strong> (clear KYA error; no fallback)</td>
+<td><strong><code>failed</code></strong> (clear KYA error)</td>
 </tr>
 <tr>
 <td>Yes</td>
-<td>No</td>
-<td>—</td>
+<td>yes</td>
+<td>no</td>
 <td>unset (default)</td>
-<td><strong><code>failed</code></strong> (&quot;KYA supported but no issuer configured&quot;)</td>
+<td><strong><code>failed</code></strong> (enable the issuer, or add one)</td>
 </tr>
 <tr>
 <td>Yes</td>
-<td>No</td>
-<td>—</td>
+<td>yes</td>
+<td>no</td>
 <td>set</td>
 <td><strong>Interactive OAuth</strong> (<code>needs_auth</code>)</td>
 </tr>
 </tbody></table>
-<p>Where this is enforced:</p>
+<p>Where this is enforced (all in the <code>connectRemote</code> 401 handler unless noted):</p>
 <ul>
-<li><strong>No KYA advertised → fallback:</strong> <code>trySilentKya</code> returns
-<code>kyaAdvertised: false</code>; the 401 handler proceeds to set <code>needs_auth</code>
-(<code>index.ts:784-794</code>).</li>
-<li><strong>KYA advertised, no issuer, default:</strong> short-circuited <em>before</em> calling
-<code>trySilentKya</code> in the 401 handler
-(<code>index.ts:739-749</code>), set to
-<code>failed</code>. The flag flips this to fall through.</li>
-<li><strong>KYA advertised, mint failed:</strong> <code>kyaAdvertised: true</code> →
-<code>failed</code> with the mint error
-(<code>index.ts:773-781</code>, and in the
-preflight <code>index.ts:1053-1072</code>).</li>
+<li><strong>No KYA advertised → fallback.</strong> <code>detectKyaSupport</code> reports <code>supportsKya: false</code>;
+the handler sets <code>needs_auth</code>.</li>
+<li><strong>KYA advertised, not yet consented.</strong> The handler sets <code>needs_kya_consent</code> and
+stops before any mint.</li>
+<li><strong>Consented but no usable issuer (default).</strong> If the issuer is configured but
+not enabled, or not configured at all, the handler sets <code>failed</code> with a message
+that says which (enable the existing issuer, or add one). The fallback flag
+flips this to interactive instead.</li>
+<li><strong>Consented, usable issuer, mint failed.</strong> <code>trySilentKya</code> returns
+<code>kyaAdvertised: true</code> with an error; the handler surfaces it as <code>failed</code>.</li>
 </ul>
-<p>Rationale: in this demo, KYA is the sanctioned non-interactive path. Silently
-dropping to a browser prompt when KYA was <em>supposed</em> to work would hide real
-failures, so the default is &quot;KYA or bust&quot; with an explicit opt-out flag.</p>
+<p>Rationale: KYA is the intended non-interactive path. Silently dropping to a
+browser prompt when KYA was <em>supposed</em> to work would hide real failures, so the
+default is &quot;KYA or bust&quot; with an explicit opt-out flag. Requiring consent and an
+enabled issuer keeps minting deliberate and tied to a validated issuer.</p>
 <hr>
 <h2>10. Interactive OAuth Fallback</h2>
 <p>When the matrix lands on interactive OAuth, the flow is the standard
@@ -695,11 +723,11 @@ stores the client directly.</li>
 waits for the loopback callback
 (<code>waitForCallback</code>),
 <strong>validates the returned state against the stored state</strong> (CSRF defense,
-<code>index.ts:1325-1329</code>), and
+<code>index.ts</code>), and
 calls <code>finishAuth</code>.</li>
 <li>If the browser can&#39;t be opened, it publishes <code>BrowserOpenFailed</code> so the CLI can
 print the URL for manual opening
-(<code>index.ts:1317-1320</code>).</li>
+(<code>index.ts</code>).</li>
 </ul>
 <h3>10.3 <code>finishAuth</code></h3>
 <p><code>finishAuth</code>: retrieves the
@@ -712,9 +740,9 @@ the code verifier, and <code>createAndStore</code>s the now-authenticated client
 <ul>
 <li>Only the configured <code>currentPath</code> is honored; everything else 404s.</li>
 <li><strong>State is mandatory</strong> — a missing <code>state</code> is rejected as a potential CSRF
-attack (<code>oauth-callback.ts:92-99</code>),
+attack (<code>oauth-callback.ts</code>),
 and an unknown state is rejected
-(<code>oauth-callback.ts:121-131</code>).</li>
+(<code>oauth-callback.ts</code>).</li>
 <li>Pending callbacks are keyed by <code>oauthState</code>, with a reverse <code>mcpName → state</code>
 index so <code>cancelPending(mcpName)</code> can find them. Default timeout: <strong>5 minutes</strong>.</li>
 <li>Serves friendly success/error HTML; the success page auto-closes the tab.</li>
@@ -729,8 +757,8 @@ configured. The silent KYA flow has no such limitation (no browser).</p>
 <h2>11. Token Storage (<code>McpAuth</code>)</h2>
 <p><code>McpAuth</code> persists to
 <code>~/.local/share/opencode/mcp-auth.json</code> with mode <code>0o600</code>
-(<code>auth.ts:35</code>,
-<code>auth.ts:85</code>). Each entry
+(<code>auth.ts</code>,
+<code>auth.ts</code>). Each entry
 (<code>Entry</code>) holds:</p>
 <pre><code class="language-ts">{ tokens?, clientInfo?, codeVerifier?, oauthState?, serverUrl? }
 </code></pre>
@@ -789,11 +817,11 @@ tool differ.</p>
 </thead>
 <tbody><tr>
 <td><code>OPENCODE_KYA_SELLER_SERVICE_ID</code></td>
-<td>Pins the seller selector to a specific <code>sellerServiceId</code> UUID, overriding URL-derived selection (<code>flag.ts:79-81</code>).</td>
+<td>Pins the seller selector to a specific <code>sellerServiceId</code> UUID, overriding URL-derived selection (<code>flag.ts</code>).</td>
 </tr>
 <tr>
 <td><code>OPENCODE_KYA_INTERACTIVE_FALLBACK</code></td>
-<td>When set, an auth-required server that advertises KYA but has <strong>no configured issuer</strong> falls through to interactive OAuth instead of hard-failing (<code>flag.ts:85-87</code>). Does <strong>not</strong> affect the &quot;no KYA advertised&quot; case (which always falls back) or the &quot;mint failed&quot; case (which always hard-fails).</td>
+<td>When set, an auth-required server that advertises KYA but has <strong>no configured issuer</strong> falls through to interactive OAuth instead of hard-failing (<code>flag.ts</code>). Does <strong>not</strong> affect the &quot;no KYA advertised&quot; case (which always falls back) or the &quot;mint failed&quot; case (which always hard-fails).</td>
 </tr>
 </tbody></table>
 <p><code>truthy()</code> accepts <code>&quot;1&quot;</code> or <code>&quot;true&quot;</code> (case-insensitive).</p>
@@ -805,13 +833,19 @@ tool differ.</p>
 toggle servers. On toggle:</p>
 <ul>
 <li><code>connected</code> → <code>mcp.disconnect({ name })</code>.</li>
+<li><code>needs_kya_consent</code> → open
+<code>dialog-kya-consent.tsx</code>
+(&quot;Should I use your Skyfire KYA identity to sign you in to <em>name</em>?&quot;). Approving
+calls <code>mcp.connect({ name, kyaConsent: &quot;true&quot; })</code>, which mints and connects.</li>
 <li><code>needs_auth</code> → <code>mcp.auth.authenticate({ name })</code> — drives the <strong>interactive</strong>
 flow (opens browser on the server host; see §10.4 loopback caveat).</li>
-<li>otherwise → <code>mcp.connect({ name })</code> — triggers the KYA preflight.</li>
+<li>otherwise → <code>mcp.connect({ name })</code>.</li>
 </ul>
 <h3>14.2 HTTP API</h3>
-<pre><code class="language-bash"># Connect (runs the KYA preflight)
+<pre><code class="language-bash"># Connect. First call on a KYA server returns needs_kya_consent;
+# pass kyaConsent=true to approve the Skyfire sign-in and mint.
 curl -sS -X POST &#39;http://localhost:4096/mcp/&lt;name&gt;/connect?directory=&lt;urlenc&gt;&#39;
+curl -sS -X POST &#39;http://localhost:4096/mcp/&lt;name&gt;/connect?kyaConsent=true&amp;directory=&lt;urlenc&gt;&#39;
 # Status
 curl -sS &#39;http://localhost:4096/mcp?directory=&lt;urlenc&gt;&#39;
 </code></pre>
@@ -851,12 +885,12 @@ two HTTP servers for local end-to-end testing:</p>
 <td><code>GET /.well-known/oauth-authorization-server</code> &amp; <code>/openid-configuration</code>, <code>GET /authorize</code> (auto-approving, PKCE), <code>POST /register</code> (DCR), <code>POST /token</code> (jwt-bearer <strong>and</strong> authorization_code), <code>POST /introspect</code>.</td>
 </tr>
 </tbody></table>
-<p>Behaviors worth noting:</p>
+<p>Notable behaviors:</p>
 <ul>
 <li><strong><code>MOCK_DISABLE_KYA=1</code></strong> drops <code>kya</code> from <code>authorization_grant_profiles_supported</code>
 and <code>jwt-bearer</code> from <code>grant_types_supported</code>
-(<code>mock:62-86</code>), turning
-the AS into a vanilla OAuth server — the way to exercise the interactive fallback.</li>
+(<code>mock</code>), turning
+the AS into a plain OAuth server. That&#39;s how you exercise the interactive fallback.</li>
 <li>The AS <strong>verifies the KYA assertion&#39;s signature</strong> against the real Skyfire QA
 JWKS (<code>https://app-qa.skyfire.xyz/.well-known/jwks.json</code>) and <code>iss</code>
 (<code>verifyKyaAssertion</code>),
@@ -865,7 +899,7 @@ rejects replayed <code>jti</code>s
 and requires <code>aid</code>/<code>hid</code> claims.</li>
 <li>The issued access token&#39;s <code>aud</code> is set to the MCP resource URI; the mock MCP
 validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <code>exp</code> + <code>scope</code> before serving
-(<code>mock:554</code>).</li>
+(<code>mock</code>).</li>
 <li>The 401 challenge advertises the AS metadata via
 <code>WWW-Authenticate: Bearer realm=&quot;mcp&quot;, authorization-uri=&quot;…/.well-known/oauth-authorization-server&quot;</code>.</li>
 </ul>
@@ -882,9 +916,9 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 
     alt server advertises org.kyapay:kya (it IS the issuer)
         A-&gt;&gt;M: connect with configured headers (skyfire-api-key)
-        Note over A,M: KYA preflight skipped — issuer authenticates itself
-    else normal remote server (trySilentKya)
-        Note over A,AS: Phase B — discovery
+        Note over A,M: KYA branch skipped — issuer authenticates itself
+    else normal remote server
+        Note over A,AS: Phase B — discovery (detectKyaSupport)
         A-&gt;&gt;M: POST /mcp (no Authorization) [B1]
         M--&gt;&gt;A: 401 WWW-Authenticate, resource_metadata=… [B2]
         A-&gt;&gt;M: GET /.well-known/oauth-protected-resource [B3]
@@ -892,21 +926,25 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
         A-&gt;&gt;AS: GET /.well-known/oauth-authorization-server [B5]
         AS--&gt;&gt;A: { token_endpoint, authorization_grant_profiles_supported } [B6]
 
-        alt KYA advertised AND issuer configured
-            Note over A,I: Phase C — mint KYA assertion
-            A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector) [C1]
-            I--&gt;&gt;A: KYA JWT assertion [C2]
-            Note over A,AS: Phase D — exchange + use
-            A-&gt;&gt;AS: POST /token grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt; [D1]
-            AS-&gt;&gt;I: fetch JWKS, verify assertion signature
-            AS--&gt;&gt;A: { access_token (aud = MCP) } [D2]
-            A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt; [D3]
-            M--&gt;&gt;A: 200 OK + tools — connected [D4]
-        else KYA advertised, NO issuer configured
-            alt OPENCODE_KYA_INTERACTIVE_FALLBACK=1
-                Note over A: fall through to interactive (below)
-            else default
-                Note over A: status = failed (&quot;no issuer configured&quot;)
+        alt KYA advertised
+            Note over A: first pass → status = needs_kya_consent
+            Note over A: user approves &quot;Sign in with Skyfire KYA&quot;&lt;br/&gt;→ reconnect with kyaConsent=true
+            alt issuer configured AND enabled (toggled on)
+                Note over A,I: Phase C — mint KYA assertion
+                A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector) [C1]
+                I--&gt;&gt;A: KYA JWT assertion [C2]
+                Note over A,AS: Phase D — exchange + use
+                A-&gt;&gt;AS: POST /token grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt; [D1]
+                AS-&gt;&gt;I: fetch JWKS, verify assertion signature
+                AS--&gt;&gt;A: { access_token (aud = MCP) } [D2]
+                A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt; [D3]
+                M--&gt;&gt;A: 200 OK + tools — connected [D4]
+            else issuer missing or not enabled
+                alt OPENCODE_KYA_INTERACTIVE_FALLBACK=1
+                    Note over A: fall through to interactive (below)
+                else default
+                    Note over A: status = failed (enable the issuer, or add one)
+                end
             end
         else KYA not advertised (or fallback enabled)
             Note over A,AS: Interactive Authorization Code + PKCE
@@ -937,27 +975,37 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 <tr>
 <td>Discovery/network error in Phase B</td>
 <td>Treated as &quot;KYA not advertised&quot; → fallback eligible</td>
-<td><code>index.ts:263</code></td>
+<td><code>detectKyaSupport</code></td>
 </tr>
 <tr>
-<td>KYA advertised, no issuer (default)</td>
+<td>KYA advertised, not yet consented</td>
+<td><code>needs_kya_consent</code> (await approval)</td>
+<td><code>connectRemote</code></td>
+</tr>
+<tr>
+<td>Issuer configured but not enabled</td>
+<td><code>failed</code> (&quot;enable it, then retry&quot;)</td>
+<td><code>connectRemote</code></td>
+</tr>
+<tr>
+<td>KYA advertised, no usable issuer</td>
 <td><code>failed</code> with actionable message</td>
-<td><code>index.ts:739-749</code></td>
+<td><code>connectRemote</code></td>
 </tr>
 <tr>
 <td>Issuer returns non-JWT text</td>
 <td><code>failed</code> &quot;Could not extract JWT assertion…&quot;</td>
-<td><code>index.ts:336-342</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>AS metadata missing <code>token_endpoint</code></td>
 <td><code>failed</code></td>
-<td><code>index.ts:366-372</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Token exchange non-2xx</td>
 <td><code>failed</code> with status + body</td>
-<td><code>index.ts:388</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>401 on StreamableHTTP</td>
@@ -967,32 +1015,32 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 <tr>
 <td>Server needs pre-registered client</td>
 <td><code>needs_client_registration</code></td>
-<td><code>index.ts:716-730</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Interactive: missing/invalid state</td>
 <td>Callback rejected (CSRF)</td>
-<td><code>oauth-callback.ts:92-131</code></td>
+<td><code>oauth-callback.ts</code></td>
 </tr>
 <tr>
 <td>Interactive: state mismatch</td>
 <td>Throw &quot;OAuth state mismatch&quot;</td>
-<td><code>index.ts:1326-1329</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Browser won&#39;t open</td>
 <td>Publish <code>BrowserOpenFailed</code>; CLI prints URL</td>
-<td><code>index.ts:1317-1320</code></td>
+<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Callback timeout</td>
 <td>Reject after 5 min</td>
-<td><code>oauth-callback.ts:65</code></td>
+<td><code>oauth-callback.ts</code></td>
 </tr>
 <tr>
 <td>Token bound to wrong origin</td>
 <td><code>getForUrl</code> returns undefined → re-auth</td>
-<td><code>auth.ts:74-80</code></td>
+<td><code>auth.ts</code></td>
 </tr>
 </tbody></table>
 <hr>
@@ -1033,7 +1081,7 @@ instead of failing.</li>
 <code>KYA.md</code>.</li>
 </ul>
 <hr>
-<h2>20. Known Limitations &amp; Future Work</h2>
+<h2>20. Known Limitations</h2>
 <ul>
 <li><strong>Interactive flow is local-only by default.</strong> The loopback redirect lands on
 the server host. A truly remote web app needs the split

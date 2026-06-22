@@ -762,16 +762,29 @@ export const layer = Layer.effect(
                     }
 
                     const cfg = yield* cfgSvc.get()
-                    const issuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+                    const configuredIssuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+
+                    // Parity with the payment gateway, which only mints through a
+                    // *connected* provider (gateway.ts looks the issuer up in
+                    // s.clients). Require the KYA issuer to be enabled (toggled on,
+                    // hence connected) too: connecting it is what validates its
+                    // config and API key, and it stops KYA from running silently for
+                    // an issuer the user never enabled.
+                    const s = yield* InstanceState.get(state)
+                    const issuerEnabled =
+                      !!configuredIssuer && s.status[configuredIssuer.name]?.status === "connected"
+                    const issuer = issuerEnabled ? configuredIssuer : undefined
 
                     if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                      // No issuer means we can't mint, and KYA is the only sanctioned
-                      // path. Set OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to fall through
-                      // to interactive OAuth instead.
+                      // No usable issuer means we can't mint, and KYA is the only
+                      // sanctioned path. Set OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to
+                      // fall through to interactive OAuth instead.
                       lastStatus = {
                         status: "failed" as const,
                         error:
-                          'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+                          configuredIssuer && !issuerEnabled
+                            ? `KYA issuer "${configuredIssuer.name}" is configured but not enabled. Enable it (toggle it on) so its config and API key are validated, then retry "${key}".`
+                            : 'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
                       }
                       return undefined
                     }
