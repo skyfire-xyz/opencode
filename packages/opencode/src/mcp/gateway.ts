@@ -257,9 +257,6 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     if (!("type" in entry)) continue
     const info = entry as ConfigMCP.Info
     if (!("capabilities" in info) || !info.capabilities) continue
-    // The legacy array form ("org.kyapay:kya"[]) carries no tool name, so it
-    // can't be a gateway provider — only the record form maps a URI to a tool.
-    if (Array.isArray(info.capabilities)) continue
     // Derive the provider's issuer identity from its server url origin. Local
     // providers have no url, so they carry no issuer constraint.
     let issuer: string | undefined
