@@ -67,7 +67,7 @@ const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:co
 // payments with. The gateway derives a provider's issuer from its configured
 // server url origin and must find a match here before minting a COIN token —
 // this is what makes COIN settlement closed-loop.
-const ACCEPTED_ISSUERS = ["https://mcp-qi.skyfire.xyz"]
+const ACCEPTED_ISSUERS = ["https://mcp-qa.skyfire.xyz"]
 
 const CATALOG = [
   {
