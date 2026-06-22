@@ -22,18 +22,16 @@ by the same process means no separate static site and no CORS config.
 - `deploy/Dockerfile` — multi-stage build. Compiles a self-contained binary with the
   SPA embedded (so our changes ship, not the upstream `app.opencode.ai` UI), then runs
   `opencode serve --hostname 0.0.0.0 --port $PORT`.
-- `deploy/render.yaml` — Render Blueprint: the service, disk, and env vars.
 
 ## Steps
 
 1. Push this fork to a Git repo Render can read.
-2. Render → **New → Blueprint** and pick the repo (it reads `deploy/render.yaml`).
-   (Or **New → Web Service**, runtime **Docker**, Dockerfile `./deploy/Dockerfile`, context `.`.)
+2. **New → Web Service**, runtime **Docker**, Dockerfile `./deploy/Dockerfile`, context `.`.
 3. Set the secret env vars (marked `sync: false`):
    - `SKYFIRE_API_KEY` — your Skyfire QA key (resolves `{env:SKYFIRE_API_KEY}` in the config).
    - `OPENCODE_SERVER_PASSWORD` — any password. Locks the server behind HTTP Basic auth
      (username `opencode`). **Set this** — an open server can drive the agent and mint
-     wallet-deducting PAY tokens.
+     wallet-deducting PAY tokens. Also upload `OPENCODE_CONFIG_CONTENT` where you put the mcp configuration json.
    - _(optional)_ a provider key like `ANTHROPIC_API_KEY` — **not required**: opencode
      serves free models by default (no key → free-tier models only, via the `"public"`
      opencode provider). Add a provider key only for paid/higher-quality models.
