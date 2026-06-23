@@ -161,7 +161,9 @@ async function resolveSellerServiceId(input: {
 // ---------------------------------------------------------------------------
 
 function extractJwtFromText(text: string): string | undefined {
-  const m = text.match(/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
+  // Anchor on the JWT header prefix `eyJ` so a domain in the message (e.g.
+  // "store.auth101.dev") isn't matched as a `word.word.word` token before the JWT.
+  const m = text.match(/(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
   return m ? m[1] : undefined
 }
 

@@ -98,6 +98,8 @@ import type {
   McpConnectResponses,
   McpDisconnectErrors,
   McpDisconnectResponses,
+  McpKyaAuthorizeErrors,
+  McpKyaAuthorizeResponses,
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusErrors,
@@ -2166,7 +2168,7 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Connect an MCP server. Pass kyaConsent="true" to confirm a Skyfire KYA sign-in for a server that requires it.
+   * Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.
    */
   public connect<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2192,6 +2194,36 @@ export class Mcp extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<McpConnectResponses, McpConnectErrors, ThrowOnError>({
       url: "/mcp/{name}/connect",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.
+   */
+  public kyaAuthorize<ThrowOnError extends boolean = false>(
+    parameters: {
+      name: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "name" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<McpKyaAuthorizeResponses, McpKyaAuthorizeErrors, ThrowOnError>({
+      url: "/mcp/{name}/kya-authorize",
       ...options,
       ...params,
     })

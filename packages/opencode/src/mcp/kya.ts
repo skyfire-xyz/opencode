@@ -46,7 +46,11 @@ function kyaCapabilityTool(config: ConfigMCP.Remote): string | undefined {
  * "Creation of KYA token for <id> is complete: <jwt>".
  */
 export function extractJwtFromText(input: string): string | undefined {
-  const m = input.match(/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
+  // Anchor on the JWT header prefix `eyJ` (base64url of `{"`). Without it a bare
+  // `word.word.word` regex matches any domain in the message (e.g. the seller's
+  // "store.auth101.dev" in "Creation of KYA token for store.auth101.dev is
+  // complete: <jwt>") before the actual token.
+  const m = input.match(/(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
   return m ? m[1] : undefined
 }
 

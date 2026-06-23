@@ -76,6 +76,7 @@ const mcp = Layer.succeed(
     resources: () => Effect.succeed({}),
     add: () => Effect.succeed({ status: { status: "disabled" as const } }),
     connect: () => Effect.void,
+    kyaAuthorize: () => Effect.succeed({ status: "connected" as const }),
     disconnect: () => Effect.void,
     getPrompt: () => Effect.succeed(undefined),
     readResource: () => Effect.succeed(undefined),

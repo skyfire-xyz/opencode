@@ -29,6 +29,7 @@ export type Event =
   | EventSessionIdle
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
+  | EventMcpKyaConsentRequired
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
@@ -830,6 +831,7 @@ export type GlobalEvent = {
     | EventSessionIdle
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
+    | EventMcpKyaConsentRequired
     | EventCommandExecuted
     | EventProjectUpdated
     | EventSessionCompacted
@@ -2700,6 +2702,14 @@ export type EventMcpBrowserOpenFailed = {
   properties: {
     mcpName: string
     url: string
+  }
+}
+
+export type EventMcpKyaConsentRequired = {
+  id: string
+  type: "mcp.kya.consent.required"
+  properties: {
+    name: string
   }
 }
 
@@ -5337,6 +5347,40 @@ export type McpConnectResponses = {
 }
 
 export type McpConnectResponse = McpConnectResponses[keyof McpConnectResponses]
+
+export type McpKyaAuthorizeData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/mcp/{name}/kya-authorize"
+}
+
+export type McpKyaAuthorizeErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * McpServerNotFoundError
+   */
+  404: McpServerNotFoundError
+}
+
+export type McpKyaAuthorizeError = McpKyaAuthorizeErrors[keyof McpKyaAuthorizeErrors]
+
+export type McpKyaAuthorizeResponses = {
+  /**
+   * Skyfire KYA token minted for the server
+   */
+  200: boolean
+}
+
+export type McpKyaAuthorizeResponse = McpKyaAuthorizeResponses[keyof McpKyaAuthorizeResponses]
 
 export type McpDisconnectData = {
   body?: never

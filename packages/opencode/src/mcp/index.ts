@@ -73,6 +73,15 @@ export const BrowserOpenFailed = BusEvent.define(
   }),
 )
 
+// Emitted when a tool call to a KYA-advertising server returns 401 and the user
+// hasn't signed in yet. The UI reacts by prompting the Skyfire KYA sign-in.
+export const KyaConsentRequired = BusEvent.define(
+  "mcp.kya.consent.required",
+  Schema.Struct({
+    name: Schema.String,
+  }),
+)
+
 export const Failed = NamedError.create("MCPFailed", {
   name: Schema.String,
 })
@@ -474,12 +483,32 @@ function listTools(key: string, client: MCPClient, timeout: number) {
   )
 }
 
+// A tool-call 401 arrives either as the SDK's UnauthorizedError or a
+// StreamableHTTPError carrying code 401.
+function isUnauthorizedError(error: unknown): boolean {
+  if (error instanceof UnauthorizedError) return true
+  if (error && typeof error === "object") {
+    const e = error as { name?: string; code?: number; message?: string }
+    if (e.name === "UnauthorizedError") return true
+    if (e.code === 401) return true
+    if (typeof e.message === "string" && /\b401\b|unauthorized/i.test(e.message)) return true
+  }
+  return false
+}
+
+// Hook invoked when a tool call 401s. It decides whether this is a KYA-gated
+// server (→ gate: surface a sign-in prompt) or unrelated (→ passthrough: rethrow).
+type KyaToolHook = {
+  onUnauthorized: () => Promise<{ action: "gate"; text: string } | { action: "passthrough" }>
+}
+
 // Convert MCP tool definition to AI SDK Tool type
 function convertMcpTool(
   mcpTool: MCPToolDef,
   client: MCPClient,
   timeout?: number,
   gateway?: { clients: Record<string, MCPClient>; capabilityMap: CapabilityMap },
+  kya?: KyaToolHook,
 ): Tool {
   const inputSchema = mcpTool.inputSchema
 
@@ -495,27 +524,32 @@ function convertMcpTool(
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
     execute: async (args: unknown) => {
-      if (gateway) {
-        return executeWithGateway({
-          toolName: mcpTool.name,
-          args: (args || {}) as Record<string, unknown>,
-          client,
-          clients: gateway.clients,
-          capabilityMap: gateway.capabilityMap,
-          timeout,
-        })
+      const run = () =>
+        gateway
+          ? executeWithGateway({
+              toolName: mcpTool.name,
+              args: (args || {}) as Record<string, unknown>,
+              client,
+              clients: gateway.clients,
+              capabilityMap: gateway.capabilityMap,
+              timeout,
+            })
+          : client.callTool(
+              { name: mcpTool.name, arguments: (args || {}) as Record<string, unknown> },
+              CallToolResultSchema,
+              { resetTimeoutOnProgress: true, timeout },
+            )
+      try {
+        return await run()
+      } catch (error) {
+        // A 401 from a KYA-advertising server is recoverable: gate the call with a
+        // sign-in prompt instead of failing it. Everything else rethrows unchanged.
+        if (!kya || !isUnauthorizedError(error)) throw error
+        const outcome = await kya.onUnauthorized()
+        if (outcome.action === "gate")
+          return { content: [{ type: "text" as const, text: outcome.text }], isError: true }
+        throw error
       }
-      return client.callTool(
-        {
-          name: mcpTool.name,
-          arguments: (args || {}) as Record<string, unknown>,
-        },
-        CallToolResultSchema,
-        {
-          resetTimeoutOnProgress: true,
-          timeout,
-        },
-      )
     },
   })
 }
@@ -583,6 +617,9 @@ export interface Interface {
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string, opts?: { kyaConsent?: boolean }) => Effect.Effect<void, NotFoundError>
+  readonly kyaAuthorize: (
+    name: string,
+  ) => Effect.Effect<{ status: "connected" | "failed"; error?: string }, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -761,42 +798,7 @@ export const layer = Layer.effect(
                       return undefined
                     }
 
-                    const cfg = yield* cfgSvc.get()
-                    const configuredIssuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
-
-                    // Parity with the payment gateway, which only mints through a
-                    // *connected* provider (gateway.ts looks the issuer up in
-                    // s.clients). Require the KYA issuer to be enabled (toggled on,
-                    // hence connected) too: connecting it is what validates its
-                    // config and API key, and it stops KYA from running silently for
-                    // an issuer the user never enabled.
-                    const s = yield* InstanceState.get(state)
-                    const issuerEnabled =
-                      !!configuredIssuer && s.status[configuredIssuer.name]?.status === "connected"
-                    const issuer = issuerEnabled ? configuredIssuer : undefined
-
-                    if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                      // No usable issuer means we can't mint, and KYA is the only
-                      // sanctioned path. Set OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to
-                      // fall through to interactive OAuth instead.
-                      lastStatus = {
-                        status: "failed" as const,
-                        error:
-                          configuredIssuer && !issuerEnabled
-                            ? `KYA issuer "${configuredIssuer.name}" is configured but not enabled. Enable it (toggle it on) so its config and API key are validated, then retry "${key}".`
-                            : 'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
-                      }
-                      return undefined
-                    }
-
-                    const minted = yield* trySilentKya({
-                      name: key,
-                      serverUrl: mcp.url,
-                      auth,
-                      issuer,
-                      sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
-                    })
-
+                    const minted = yield* mintKya(key, mcp.url)
                     if (minted.minted) {
                       // Token stored — retry StreamableHTTP once with a fresh transport.
                       kyaRetried = true
@@ -813,13 +815,7 @@ export const layer = Layer.effect(
 
                     // Consent given but minting failed — surface a clear failure
                     // rather than silently falling back to interactive OAuth.
-                    lastStatus = {
-                      status: "failed" as const,
-                      error:
-                        "error" in minted && typeof minted.error === "string"
-                          ? minted.error
-                          : "Silent KYA token minting failed",
-                    }
+                    lastStatus = { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
                     return undefined
                   }
                 }
@@ -1080,12 +1076,68 @@ export const layer = Layer.effect(
       return { status: s.status }
     })
 
+    // Resolve the KYA issuer to mint through. Parity with the payment gateway: the
+    // issuer must be configured AND enabled (toggled on, hence connected) so its
+    // config + API key are validated. Shared by the connect-time 401 path and the
+    // tool-call authorize path.
+    const resolveEnabledKyaIssuer = Effect.fn("MCP.resolveEnabledKyaIssuer")(function* () {
+      const cfg = yield* cfgSvc.get()
+      const configuredIssuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+      const s = yield* InstanceState.get(state)
+      const issuerEnabled = !!configuredIssuer && s.status[configuredIssuer.name]?.status === "connected"
+      const issuer = issuerEnabled ? configuredIssuer : undefined
+      if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+        return {
+          issuer: undefined,
+          error:
+            configuredIssuer && !issuerEnabled
+              ? `KYA issuer "${configuredIssuer.name}" is configured but not enabled. Enable it (toggle it on) so its config and API key are validated, then retry.`
+              : 'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+        }
+      }
+      return { issuer, error: undefined as string | undefined }
+    })
+
+    // Mint + exchange + store a KYA access token for `name`. Returns minted:false
+    // with a human-readable error on any failure (no issuer, mint/exchange failed).
+    const mintKya = Effect.fn("MCP.mintKya")(function* (name: string, serverUrl: string) {
+      const { issuer, error } = yield* resolveEnabledKyaIssuer()
+      if (error) return { minted: false as const, error }
+      const result = yield* trySilentKya({
+        name,
+        serverUrl,
+        auth,
+        issuer,
+        sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
+      })
+      if (result.minted) return { minted: true as const }
+      return {
+        minted: false as const,
+        error: "error" in result && typeof result.error === "string" ? result.error : "Silent KYA token minting failed",
+      }
+    })
+
     const connect = Effect.fn("MCP.connect")(function* (name: string, opts?: { kyaConsent?: boolean }) {
       const mcp = yield* requireMcpConfig(name)
       // KYA detection + consent gating happens in connectRemote at the real 401.
       // `kyaConsent` carries the user's "Sign in with Skyfire KYA" confirmation:
       // false → gate (needs_kya_consent); true → mint + connect.
       yield* createAndStore(name, { ...mcp, enabled: true }, opts?.kyaConsent ?? false)
+    })
+
+    // Mint a KYA token for an already-connected server (the user approved the
+    // tool-call sign-in prompt). Unlike connect(), this does NOT reconnect — the
+    // live transport reads the stored token on its next request. On success we
+    // flip the status back to connected so the previously-gated tools reappear.
+    const kyaAuthorize = Effect.fn("MCP.kyaAuthorize")(function* (name: string) {
+      const mcp = yield* requireMcpConfig(name)
+      if (mcp.type !== "remote")
+        return { status: "failed" as const, error: "KYA is only supported for remote MCP servers." }
+      const minted = yield* mintKya(name, mcp.url)
+      if (!minted.minted) return { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
+      const s = yield* InstanceState.get(state)
+      if (s.status[name]?.status !== "connected") s.status[name] = { status: "connected" as const }
+      return { status: "connected" as const }
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -1099,6 +1151,8 @@ export const layer = Layer.effect(
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
+      // Lets the detached tool-execute callback publish bus events from async code.
+      const bridge = yield* EffectBridge.make()
 
       const cfg = yield* cfgSvc.get()
       const config = cfg.mcp ?? {}
@@ -1133,12 +1187,37 @@ export const layer = Layer.effect(
             const hasCapabilities = Object.keys(capabilityMap).length > 0
             const gateway = hasCapabilities ? { clients: s.clients, capabilityMap } : undefined
 
+            // For remote servers, gate a tool-call 401 behind a Skyfire sign-in
+            // prompt when (and only when) the server advertises KYA. Detection runs
+            // lazily — only on an actual 401, not at list time.
+            const remoteUrl = entry && isMcpConfigured(entry) && entry.type === "remote" ? entry.url : undefined
+            const kya: KyaToolHook | undefined = remoteUrl
+              ? {
+                  onUnauthorized: async () => {
+                    const support = await detectKyaSupport(clientName, remoteUrl).catch(
+                      () => ({ supportsKya: false }) as Awaited<ReturnType<typeof detectKyaSupport>>,
+                    )
+                    if (!support.supportsKya) return { action: "passthrough" as const }
+                    // Signal the UI to prompt for sign-in via the global bus (not the
+                    // instance-scoped status, which doesn't reliably reach the UI from
+                    // this detached callback). The server stays connected, so its tools
+                    // remain available for the post-approval retry.
+                    await bridge.promise(bus.publish(KyaConsentRequired, { name: clientName }).pipe(Effect.ignore))
+                    return {
+                      action: "gate" as const,
+                      text: `This tool requires a Skyfire KYA sign-in for "${clientName}". Approve the Skyfire sign-in prompt, then ask me to retry.`,
+                    }
+                  },
+                }
+              : undefined
+
             for (const mcpTool of listed) {
               result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
                 mcpTool,
                 client,
                 timeout,
                 gateway,
+                kya,
               )
             }
           }),
@@ -1401,6 +1480,7 @@ export const layer = Layer.effect(
       resources,
       add,
       connect,
+      kyaAuthorize,
       disconnect,
       getPrompt,
       readResource,

@@ -6,7 +6,7 @@
     "XYZ-Clothiers": {
       "type": "remote",
       "enabled": true,
-      "url": "http://127.0.0.1:8787/mcp",
+      "url": "https://store.auth101.dev/mcp",
     },
     // Skyfire issuer — hidden from the agent. Mints KYA tokens to authenticate
     // the merchant connection and PAY tokens to settle purchases.

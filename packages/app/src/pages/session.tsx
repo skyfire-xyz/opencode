@@ -67,6 +67,7 @@ import { extractPromptFromParts } from "@/utils/prompt"
 import { same } from "@/utils/same"
 import { formatServerError } from "@/utils/server-errors"
 import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
+import { useKyaConsentDialogs } from "./session/kya-consent-dialogs"
 
 const emptyUserMessages: UserMessage[] = []
 type FollowupItem = FollowupDraft & { id: string }
@@ -1652,6 +1653,7 @@ export default function Page() {
   })
 
   useUsageExceededDialogs()
+  useKyaConsentDialogs()
 
   const composerRegion = (placement: "dock" | "inline") => (
     <SessionComposerRegion
