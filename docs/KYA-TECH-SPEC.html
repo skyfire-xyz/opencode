@@ -15,46 +15,36 @@
 </style></head>
 <body>
 <h1>KYA + OAuth + MCP Integration — Technical Specification</h1>
-<p>How OpenCode authenticates to protected MCP servers with the KYA (Know Your
-Agent) grant profile, when it falls back to interactive OAuth, and how the
-payment gateway (<code>org.kyapay:pay</code>) reuses the same capability machinery. It
-covers the code paths, data structures, and network exchanges involved, for
-engineers working on the MCP transport, auth, and gateway layers.</p>
+<p>How an autonomous agent authenticates to a protected MCP server using the KYA
+(Know Your Agent) grant profile, when it falls back to interactive OAuth, and how
+the same capability machinery is reused to mint payment tokens
+(<code>org.kyapay:pay</code>). It describes the roles, data structures, and network
+exchanges involved, independent of any particular client implementation.</p>
 <blockquote>
-<p>This is the design reference. For a hands-on runbook (starting the mock
-servers, connecting from the web UI, reading the logs), see <code>KYA.md</code>.
-Where the two overlap, this doc is authoritative on behavior and KYA.md on
-operation.</p>
+<p>This is the design reference. For a hands-on operations description (running a protected resource and authorization server, configuring the issuer, reading the logs), see <a href="KYA.md">KYA.md</a>. Where the two overlap, this doc is authoritative on behavior and KYA.md on operation.</p>
 </blockquote>
 <hr>
 <h2>1. Purpose &amp; Background</h2>
 <p>MCP (Model Context Protocol) remote servers are HTTP resources that may require
-OAuth 2.1 authorization. The standard MCP SDK flow for an unauthenticated server
-is the interactive <strong>Authorization Code + PKCE</strong> flow: open a browser, the user
-consents, an authorization code comes back to a loopback redirect, and the code
-is exchanged for an access token.</p>
-<p>That flow assumes a <em>human</em> is present to consent. OpenCode acts as an
-<strong>autonomous agent</strong>, so we want a <strong>non-interactive</strong> way to obtain an access
-token where the agent&#39;s identity (not a human&#39;s browser session) is what the
-resource server authorizes. That is what <strong>KYA</strong> provides:</p>
+OAuth 2.1 authorization. The standard flow for an unauthenticated server is the
+interactive <strong>Authorization Code + PKCE</strong> flow: open a browser, the user
+consents, an authorization code returns to a loopback redirect, and the code is
+exchanged for an access token.</p>
+<p>That flow assumes a <em>human</em> is present to consent. An autonomous agent has no
+browser session to drive, so it needs a <strong>non-interactive</strong> way to obtain an
+access token in which the <strong>agent's identity</strong> (not a human's browser session)
+is what the resource server authorizes. That is what <strong>KYA</strong> provides:</p>
 <ol>
-<li>A trusted <strong>issuer</strong> (Skyfire&#39;s MCP server) mints a signed <strong>KYA assertion</strong>
-(a JWT) that attests to the agent&#39;s identity and the seller it wants to act
-against.</li>
-<li>OpenCode exchanges that assertion at the resource&#39;s <strong>Authorization Server</strong>
-(AS) for a normal OAuth access token, using RFC 7523&#39;s
-<code>urn:ietf:params:oauth:grant-type:jwt-bearer</code> grant.</li>
-<li>OpenCode uses that access token as a plain <code>Bearer</code> credential against the
-MCP server, which validates it as an ordinary OAuth 2.1 resource server with
-<strong>no KYA awareness</strong>.</li>
+<li>A trusted <strong>issuer</strong> mints a signed <strong>KYA assertion</strong> (a JWT) attesting to the agent's identity and the seller it wants to act against. (Skyfire's MCP server is the issuer in the reference deployment.)</li>
+<li>The agent exchanges that assertion at the resource's <strong>Authorization Server</strong> (AS) for a normal OAuth access token, using RFC 7523's <code>urn:ietf:params:oauth:grant-type:jwt-bearer</code> grant.</li>
+<li>The agent uses that access token as a plain <code>Bearer</code> credential against the MCP server, which validates it as an ordinary OAuth 2.1 resource server with <strong>no KYA awareness</strong>.</li>
 </ol>
 <p>KYA is therefore a <em>non-interactive optimization layered on top of standard
-OAuth</em>. When a server doesn&#39;t advertise KYA (or KYA minting can&#39;t be performed),
-OpenCode falls back to the interactive flow.</p>
-<p>The same &quot;config capability → issuer MCP tool&quot; machinery is reused at
-<strong>tool-call time</strong> by the <strong>payment gateway</strong> (<code>org.kyapay:pay</code>) to mint
-<em>payment</em> tokens mid-conversation. That is a sibling feature documented in
-§12.</p>
+OAuth</em>. When a server doesn't advertise KYA (or KYA minting can't be performed),
+the agent falls back to the interactive flow.</p>
+<p>The same "configured capability → issuer MCP tool" machinery is reused at
+<strong>tool-call time</strong> to mint <em>payment</em> tokens (<code>org.kyapay:pay</code>) mid-conversation.
+That sibling feature is documented in §12.</p>
 <hr>
 <h2>2. Terminology &amp; Actors</h2>
 <table>
@@ -64,13 +54,14 @@ OpenCode falls back to the interactive flow.</p>
 <th>Meaning</th>
 </tr>
 </thead>
-<tbody><tr>
+<tbody>
+<tr>
 <td><strong>Agent</strong></td>
-<td>OpenCode itself (the instance server process).</td>
+<td>The autonomous MCP client that connects to remote MCP servers on a user's behalf.</td>
 </tr>
 <tr>
 <td><strong>MCP server / Resource</strong></td>
-<td>The protected remote MCP server the agent wants to use (e.g. <code>merchant-mcp</code>). A plain OAuth 2.1 resource server.</td>
+<td>The protected remote MCP server the agent wants to use. A plain OAuth 2.1 resource server.</td>
 </tr>
 <tr>
 <td><strong>Resource AS</strong></td>
@@ -78,7 +69,7 @@ OpenCode falls back to the interactive flow.</p>
 </tr>
 <tr>
 <td><strong>KYA Issuer</strong></td>
-<td>A remote MCP server that advertises capability <code>org.kyapay:kya</code> and exposes a tool (e.g. <code>create-kya-token</code>) that mints KYA assertions. In practice this is Skyfire&#39;s MCP server.</td>
+<td>A remote MCP server advertising capability <code>org.kyapay:kya</code> and exposing a tool (e.g. <code>create-kya-token</code>) that mints KYA assertions. Skyfire's MCP server in the reference deployment.</td>
 </tr>
 <tr>
 <td><strong>KYA assertion</strong></td>
@@ -96,7 +87,8 @@ OpenCode falls back to the interactive flow.</p>
 <td><strong>Seller selector</strong></td>
 <td>The argument passed to the issuer tool identifying the seller: either <code>sellerServiceId</code> (a UUID) or <code>sellerDomainOrUrl</code> (a hostname).</td>
 </tr>
-</tbody></table>
+</tbody>
+</table>
 <p><strong>Relevant RFCs / specs:</strong></p>
 <ul>
 <li><strong>RFC 9728</strong> — OAuth 2.0 Protected Resource Metadata (<code>/.well-known/oauth-protected-resource</code>).</li>
@@ -106,207 +98,129 @@ OpenCode falls back to the interactive flow.</p>
 <li><strong>RFC 7636</strong> — PKCE (interactive fallback).</li>
 <li><strong>KYA / ID-JAG grant profile drafts</strong> — advertised via <code>authorization_grant_profiles_supported</code> in AS metadata; profile URN <code>urn:ietf:params:oauth:grant-profile:kya</code>.</li>
 </ul>
-<p>Phase labels <strong>B / C / D</strong> used throughout map to the Skyfire×Okta design spec:</p>
+<p>Phase labels <strong>B / C / D</strong> used throughout:</p>
 <ul>
 <li><strong>Phase B</strong> — discovery (find the Resource AS and read its grant profiles).</li>
 <li><strong>Phase C</strong> — mint the KYA assertion at the issuer.</li>
 <li><strong>Phase D</strong> — exchange the assertion for an access token and use it.</li>
 </ul>
+<p>(Phase A is the user's act of configuring the servers; it is out of band.)</p>
 <hr>
 <h2>3. Architecture Overview</h2>
-<h3>3.1 Component / file map</h3>
-<table>
-<thead>
-<tr>
-<th>File</th>
-<th>Responsibility</th>
-</tr>
-</thead>
-<tbody><tr>
-<td><code>packages/opencode/src/mcp/index.ts</code></td>
-<td>The <code>MCP</code> Effect service. Owns connection lifecycle, KYA detection (<code>detectKyaSupport</code>), the consent + issuer gates, the mint orchestration (<code>trySilentKya</code>), transport selection, status state, and the interactive-auth entry points (<code>startAuth</code>/<code>authenticate</code>/<code>finishAuth</code>).</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/mcp/kya.ts</code></td>
-<td>Pure KYA helpers: capability detection, issuer selection from config, JWT extraction, RFC 9728/8414 discovery, RFC 7523 token exchange. <strong>Note:</strong> its <code>discoverResourceAuthServer</code> + <code>exchangeAssertionForAccessToken</code> are used by the CLI <code>mcp debug</code> path only; the silent connect path in <code>index.ts</code> has its own inline copies (§7.5).</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/mcp/oauth-provider.ts</code></td>
-<td><code>McpOAuthProvider</code> implementing the MCP SDK&#39;s <code>OAuthClientProvider</code>. Bridges the SDK&#39;s interactive OAuth to OpenCode&#39;s token store; defers KYA to the out-of-band path.</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/mcp/oauth-callback.ts</code></td>
-<td>Local loopback HTTP server that receives the <code>?code=…</code> redirect for the interactive flow.</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/mcp/auth.ts</code></td>
-<td><code>McpAuth</code> Effect service: persistent token/client/state store at <code>~/.local/share/opencode/mcp-auth.json</code>.</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/mcp/gateway.ts</code></td>
-<td>The payment gateway: intercepts tool calls, catches <code>payments/*</code> signals, mints <code>org.kyapay:pay</code> tokens via the issuer, retries the tool.</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/config/mcp.ts</code></td>
-<td>Config schema for MCP entries (<code>Local</code> / <code>Remote</code>), OAuth config, and the <code>capabilities</code> schema.</td>
-</tr>
-<tr>
-<td><code>packages/core/src/flag/flag.ts</code></td>
-<td>Environment flags (<code>OPENCODE_KYA_SELLER_SERVICE_ID</code>, <code>OPENCODE_KYA_INTERACTIVE_FALLBACK</code>).</td>
-</tr>
-<tr>
-<td><code>packages/opencode/src/cli/cmd/mcp.ts</code></td>
-<td>CLI surface: <code>mcp list / auth / logout / add / debug</code>. <code>debug</code> runs a standalone KYA mint for diagnosis.</td>
-</tr>
-<tr>
-<td><code>packages/opencode/script/mock-mcp-kya-server.ts</code></td>
-<td>Local mock of the protected MCP server <strong>and</strong> Resource AS, for end-to-end testing.</td>
-</tr>
-<tr>
-<td><code>packages/app/src/components/dialog-select-mcp.tsx</code>, <code>status-popover-body.tsx</code>, <code>dialog-kya-consent.tsx</code></td>
-<td>Web UI entry points: toggle <code>connect</code>/<code>disconnect</code>, drive <code>mcp.auth.authenticate</code>, and the Skyfire KYA consent dialog (reconnect with <code>kyaConsent</code>).</td>
-</tr>
-</tbody></table>
-<h3>3.2 High-level data flow</h3>
-<pre><code>                 ┌────────────────────────── OpenCode instance server ──────────────────────────┐
-                 │                                                                                │
-  web UI / CLI ──┼─▶ MCP.connect(name) ─▶ connectRemote ─▶ [transport connect]                   │
-                 │                              │                                                 │
-                 │                              ▼ (401 / UnauthorizedError)                       │
-                 │                        trySilentKya ──── Phase B: discovery ─────┐             │
-                 │                              │                                   ▼             │
-                 │                              │                          Resource AS metadata   │
-                 │                              ▼ Phase C                                         │
-                 │                        KYA Issuer (Skyfire MCP) ── create-kya-token ─▶ JWT     │
-                 │                              ▼ Phase D                                         │
-                 │                        Resource AS /token (jwt-bearer) ─▶ access_token         │
-                 │                              ▼                                                 │
-                 │                        McpAuth.updateTokens (persist)                          │
-                 │                              ▼                                                 │
-                 │                        retry StreamableHTTP w/ Bearer ─▶ connected             │
-                 └────────────────────────────────────────────────────────────────────────────┘
+<p>Three network parties cooperate, with the agent orchestrating:</p>
+<ul>
+<li>The <strong>agent</strong> holds configuration for both the target MCP server(s) and the KYA issuer, owns the connection lifecycle, and performs discovery, minting, and the token exchange.</li>
+<li>The <strong>Resource AS</strong> publishes discovery metadata (whether it supports KYA) and exchanges a KYA assertion for an access token.</li>
+<li>The <strong>KYA issuer</strong> mints assertions on request, authenticated by the agent's issuer credential (e.g. an API key).</li>
+</ul>
+<h3>3.1 High-level data flow</h3>
+<pre><code>   user action ─▶ connect(server)
+                       │
+                       ▼ (401 / Unauthorized)
+                 silent KYA flow ──── Phase B: discovery ─────┐
+                       │                                      ▼
+                       │                             Resource AS metadata
+                       ▼ Phase C                                 
+                 KYA Issuer ── create-kya-token ─▶ KYA JWT assertion
+                       ▼ Phase D                                 
+                 Resource AS /token (jwt-bearer) ─▶ access_token
+                       ▼
+                 persist token (keyed by resource origin)
+                       ▼
+                 retry transport w/ Bearer ─▶ connected
 </code></pre>
+<p>The agent never calls the issuer's REST APIs directly; minting always goes
+through an <strong>MCP tool call</strong> on the issuer server. This keeps the issuer's
+credential (the API key) on the issuer connection only.</p>
 <hr>
 <h2>4. Configuration Model</h2>
-<h3>4.1 Remote server schema</h3>
-<p>Defined in <code>packages/opencode/src/config/mcp.ts</code>.
-A remote MCP entry:</p>
+<h3>4.1 Remote server entry</h3>
+<p>A remote MCP entry describes how to reach a server and (optionally) how it
+authenticates:</p>
 <pre><code class="language-jsonc">{
-  &quot;type&quot;: &quot;remote&quot;,
-  &quot;url&quot;: &quot;http://127.0.0.1:8787/mcp&quot;,
-  &quot;transport&quot;: &quot;streamable_http&quot;,      // optional: &quot;streamable_http&quot; | &quot;sse&quot;
-  &quot;enabled&quot;: true,                      // optional
-  &quot;headers&quot;: { &quot;x-custom&quot;: &quot;…&quot; },       // optional, sent on every request
-  &quot;oauth&quot;: { /* … */ } | false,         // optional; false disables OAuth auto-detect
-  &quot;timeout&quot;: 30000,                     // optional, ms
-  &quot;capabilities&quot;: { /* … */ }           // optional, see §5
+  "type": "remote",
+  "url": "https://merchant.example.com/mcp",
+  "transport": "streamable_http",      // optional: "streamable_http" | "sse"
+  "enabled": true,                      // optional
+  "headers": { "x-custom": "…" },       // optional, sent on every request
+  "oauth": { /* … */ } | false,         // optional; false disables OAuth auto-detect
+  "timeout": 30000,                     // optional, ms
+  "capabilities": { /* … */ }           // optional, see §5
 }
 </code></pre>
-<p>OAuth sub-config (<code>McpOAuthConfig</code>):</p>
-<pre><code class="language-jsonc">&quot;oauth&quot;: {
-  &quot;clientId&quot;: &quot;…&quot;,        // pre-registered client; skips dynamic registration
-  &quot;clientSecret&quot;: &quot;…&quot;,
-  &quot;scope&quot;: &quot;…&quot;,
-  &quot;callbackPort&quot;: 19876,  // shorthand for redirectUri port
-  &quot;redirectUri&quot;: &quot;http://127.0.0.1:19876/mcp/oauth/callback&quot;
+<p>Optional OAuth sub-config (used by the interactive fallback):</p>
+<pre><code class="language-jsonc">"oauth": {
+  "clientId": "…",        // pre-registered client; skips dynamic registration
+  "clientSecret": "…",
+  "scope": "…",
+  "callbackPort": 19876,  // shorthand for redirectUri port
+  "redirectUri": "http://127.0.0.1:19876/mcp/oauth/callback"
 }
 </code></pre>
 <h3>4.2 The <code>capabilities</code> schema</h3>
-<p><code>capabilities</code> is a <strong>union</strong> of two forms (<code>Remote.capabilities</code>):</p>
-<ol>
-<li><p><strong>Record form (canonical):</strong> maps a capability URI to a <code>{ tool }</code> object.
-The <code>tool</code> is the MCP tool on that server which mints the token for the
-capability.</p>
-<pre><code class="language-jsonc">&quot;capabilities&quot;: {
-  &quot;org.kyapay:kya&quot;: { &quot;tool&quot;: &quot;create-kya-token&quot; },
-  &quot;org.kyapay:pay&quot;: { &quot;tool&quot;: &quot;create-pay-token&quot; }
+<p><code>capabilities</code> maps a capability URI to the issuer tool that fulfills it:</p>
+<pre><code class="language-jsonc">"capabilities": {
+  "org.kyapay:kya": { "tool": "create-kya-token" },
+  "org.kyapay:pay": { "tool": "create-pay-token" }
 }
 </code></pre>
-</li>
-<li><p><strong>Legacy array form:</strong> a bare list of URIs with no tool mapping.</p>
-<pre><code class="language-jsonc">&quot;capabilities&quot;: [&quot;org.kyapay:kya&quot;]
-</code></pre>
-<p>For the array form, KYA detection still works but the tool name defaults to
-<code>create-kya-token</code> (see <code>kyaCapabilityTool</code>),
-and the <strong>payment gateway ignores array-form entries entirely</strong> because they
-carry no tool name (<code>buildCapabilityMap</code>).</p>
-</li>
-</ol>
-<p>The <code>Capability</code> struct&#39;s <code>tool</code> field is <code>optional</code> in the schema
-(<code>Capability</code>); a record entry
-without a <code>tool</code> can&#39;t mint and is skipped by the gateway.</p>
-<h3>4.3 Example wallet config (<code>.opencode/opencode.jsonc</code>)</h3>
+<p>The <code>tool</code> value names the MCP tool on that server which mints the token for the
+capability. A capability entry without a usable <code>tool</code> cannot mint and is
+ignored.</p>
+<h3>4.3 Example configuration</h3>
 <pre><code class="language-jsonc">{
-  &quot;mcp&quot;: {
-    &quot;merchant&quot;: {
-      &quot;type&quot;: &quot;remote&quot;,
-      &quot;url&quot;: &quot;https://merchant.example.com/mcp&quot;,
+  "mcp": {
+    "merchant": {
+      "type": "remote",
+      "url": "https://merchant.example.com/mcp",
     },
-    &quot;skyfire&quot;: {
-      &quot;type&quot;: &quot;remote&quot;,
-      &quot;url&quot;: &quot;http://mcp.skyfire.xyz/mcp&quot;,
-      &quot;capabilities&quot;: {
-        &quot;org.kyapay:kya&quot;: { &quot;tool&quot;: &quot;create-kya-token&quot; },
-        &quot;org.kyapay:pay&quot;: { &quot;tool&quot;: &quot;create-pay-token&quot; },
+    "skyfire": {
+      "type": "remote",
+      "url": "https://mcp.skyfire.xyz/mcp",
+      "capabilities": {
+        "org.kyapay:kya": { "tool": "create-kya-token" },
+        "org.kyapay:pay": { "tool": "create-pay-token" },
       },
-      &quot;headers&quot;: {
-        &quot;skyfire-api-key&quot;: &quot;{env:SKYFIRE_API_KEY}&quot;,
+      "headers": {
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
       },
     },
   },
 }
 </code></pre>
 <p>The issuer (<code>skyfire</code>) authenticates itself via its <code>skyfire-api-key</code> header. It
-never enters the KYA branch (you don&#39;t mint a KYA token to talk to the KYA
-issuer). See §7.1.</p>
+never enters the KYA branch — you don't mint a KYA token to talk to the KYA
+issuer (see §7.1).</p>
 <blockquote>
-<p><strong>Security:</strong> API keys must never be committed. Use <code>{env:SKYFIRE_API_KEY}</code>
-interpolation and export the secret at runtime.</p>
+<p><strong>Security:</strong> API keys must never be committed. Use environment interpolation (e.g. <code>{env:SKYFIRE_API_KEY}</code>) and supply the secret at runtime.</p>
 </blockquote>
 <hr>
 <h2>5. Capability Model &amp; Issuer Selection</h2>
 <h3>5.1 Detecting the KYA capability</h3>
-<p><code>hasKyaCapability</code> returns true when an
-entry&#39;s <code>capabilities</code> either:</p>
-<ul>
-<li>(record form) contains the key <code>org.kyapay:kya</code>, or</li>
-<li>(array form) includes the string <code>&quot;org.kyapay:kya&quot;</code>.</li>
-</ul>
-<p><code>KYA_CAPABILITY = &quot;org.kyapay:kya&quot;</code> is the single source of truth
-(<code>kya.ts</code>).</p>
+<p>A server is KYA-capable when its <code>capabilities</code> map contains the key
+<code>org.kyapay:kya</code>. <code>org.kyapay:kya</code> is the single capability URI used for KYA
+issuance.</p>
 <h3>5.2 Selecting the issuer</h3>
-<p><code>kyaIssuerFromConfig</code> scans the whole
-<code>mcp</code> config and returns the <strong>first remote server</strong> that (a) advertises the KYA
-capability and (b) resolves to a non-empty tool name. The return shape:</p>
-<pre><code class="language-ts">type KyaIssuer = { name: string; config: ConfigMCP.Remote; tool: string }
-</code></pre>
+<p>The agent scans its whole MCP config and selects the <strong>first remote server</strong>
+that (a) advertises the KYA capability and (b) resolves to a non-empty tool name.
+An issuer is identified by <code>{ name, config, tool }</code>.</p>
 <p>Key properties:</p>
 <ul>
-<li><strong>Selection is by capability, not by server name.</strong> The example server is
-named <code>skyfire</code> but any name works.</li>
-<li><strong>Tool resolution</strong> (<code>kyaCapabilityTool</code>):
-record form uses <code>capabilities[&quot;org.kyapay:kya&quot;].tool</code> (trimmed); array form
-defaults to <code>&quot;create-kya-token&quot;</code>. If the record form has an empty/missing
-tool, that server is <strong>not</strong> treated as an issuer.</li>
-<li><strong>First match wins</strong> — if multiple servers advertise KYA, ordering of
-<code>Object.entries(config.mcp)</code> decides.</li>
+<li><strong>Selection is by capability, not by server name.</strong> The example server is named <code>skyfire</code>, but any name works.</li>
+<li><strong>Tool resolution</strong> uses <code>capabilities["org.kyapay:kya"].tool</code>. If that is empty or missing, the server is <strong>not</strong> treated as an issuer.</li>
+<li><strong>First match wins</strong> — if multiple servers advertise KYA, configuration order decides.</li>
 </ul>
-<h3>5.3 The capability map (for payments)</h3>
-<p><code>buildCapabilityMap</code> builds a
-<code>{ [capabilityURI]: { server, tool } }</code> map across <strong>all</strong> configured servers,
-record form only. This drives both:</p>
+<h3>5.3 The capability map (for payments) and issuer hiding</h3>
+<p>A capability map <code>{ [capabilityURI]: { server, tool } }</code> is built across all
+configured servers. It drives two things:</p>
 <ul>
 <li><strong>Payment routing</strong> (§12), and</li>
-<li><strong>Provider hiding</strong> in <code>MCP.tools</code>:
-any server that appears as a capability provider is excluded from the toolset
-exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
-<code>create-kya-token</code> directly and bypass the gateway
-(<code>index.ts</code>).</li>
+<li><strong>Provider hiding:</strong> any server that appears as a capability provider is <strong>excluded from the toolset exposed to the model</strong>, so the model cannot call <code>create-kya-token</code> / <code>create-pay-token</code> directly and bypass the gateway.</li>
 </ul>
 <hr>
 <h2>6. Connection Lifecycle &amp; Status Model</h2>
 <h3>6.1 Status values</h3>
-<p><code>Status</code> is a discriminated union:</p>
+<p>A server's connection state is a small discriminated set:</p>
 <table>
 <thead>
 <tr>
@@ -314,13 +228,14 @@ exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 <th>Meaning</th>
 </tr>
 </thead>
-<tbody><tr>
+<tbody>
+<tr>
 <td><code>connected</code></td>
 <td>Client connected, tools listed and cached.</td>
 </tr>
 <tr>
 <td><code>disabled</code></td>
-<td><code>enabled: false</code>, or explicitly disconnected.</td>
+<td>Disabled in config, or explicitly disconnected.</td>
 </tr>
 <tr>
 <td><code>not_connected</code></td>
@@ -328,7 +243,7 @@ exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 </tr>
 <tr>
 <td><code>needs_kya_consent</code></td>
-<td>The server advertises KYA, but the user hasn&#39;t approved a Skyfire KYA sign-in. Reconnect with consent.</td>
+<td>The server advertises KYA, but the user hasn't approved a KYA sign-in. Reconnect with consent.</td>
 </tr>
 <tr>
 <td><code>needs_auth</code></td>
@@ -336,294 +251,159 @@ exposed to the LLM, so the model cannot call <code>create-pay-token</code> /
 </tr>
 <tr>
 <td><code>needs_client_registration</code></td>
-<td>Server requires a pre-registered client; DCR unsupported.</td>
+<td>Server requires a pre-registered client; dynamic client registration unsupported.</td>
 </tr>
 <tr>
 <td><code>failed</code></td>
-<td>Connection or KYA minting failed; carries an <code>error</code> string.</td>
+<td>Connection or KYA minting failed; carries an error string.</td>
 </tr>
-</tbody></table>
+</tbody>
+</table>
 <h3>6.2 Connections are lazy</h3>
-<p>The service does <strong>not</strong> eagerly connect servers at startup
-(<code>MCP.state</code>). A connection (and
-any KYA it triggers) happens on-demand via <code>MCP.connect(name)</code> when the user
-enables a server in the UI / CLI / API.</p>
+<p>The agent does <strong>not</strong> eagerly connect servers at startup. A connection (and any
+KYA it triggers) happens on demand when the user enables a server.</p>
 <h3>6.3 Entry point, consent, and the issuer gate</h3>
-<p>KYA runs in one place: the <code>connectRemote</code> 401 catch handler in
-<code>index.ts</code>. When a StreamableHTTP connect
-returns <code>UnauthorizedError</code> and the guards in §7.1 pass, that handler drives
-detection, the consent gate, the issuer check, and the mint. <code>MCP.connect(name, { kyaConsent })</code>
-does no KYA work itself; it just forwards the consent flag down to
-<code>createAndStore</code> → <code>create</code> → <code>connectRemote</code>.</p>
+<p>KYA runs in one place: the handler that fires when a transport connect returns an
+<strong>Unauthorized (401)</strong> result and the guards in §7.1 pass. That handler drives
+detection, the consent gate, the issuer check, and the mint.</p>
 <p>Connecting a KYA-protected server therefore takes two passes:</p>
 <ol>
-<li><p><strong>First connect (no consent).</strong> The 401 handler calls <code>detectKyaSupport</code>
-(§7.2). If the server advertises KYA, the handler stops at
-<code>needs_kya_consent</code> rather than minting — KYA carries the agent&#39;s identity, so
-the user approves it explicitly (&quot;Sign in with Skyfire KYA&quot;) before any token
-is minted.</p>
-</li>
-<li><p><strong>Reconnect with consent.</strong> The UI/API calls connect again with
-<code>kyaConsent=true</code>. This time the handler passes the consent check and proceeds
-to the <strong>issuer gate</strong>: the configured KYA issuer must itself be enabled
-(toggled on, hence connected). If it isn&#39;t, the connect fails with a message
-telling the user to enable it — connecting the issuer is what validates its
-config and API key, and this keeps KYA from minting through an issuer the user
-never enabled. This mirrors the payment gateway, which only mints through a
-connected provider (§12). With the issuer enabled, the handler runs
-<code>trySilentKya</code> (§7) and retries the transport on success.</p>
-</li>
+<li><strong>First connect (no consent).</strong> The handler runs discovery (§7.2). If the server advertises KYA, it stops at <code>needs_kya_consent</code> rather than minting — KYA carries the agent's identity, so the user approves it explicitly before any token is minted.</li>
+</ol>
+<ol>
+<li><strong>Reconnect with consent.</strong> The client reconnects with a consent flag. This time the handler passes the consent check and proceeds to the <strong>issuer gate</strong>: the configured KYA issuer must itself be enabled (connected). If it isn't, the connect fails with a message telling the user to enable it — connecting the issuer is what validates its config and API key, and this keeps KYA from minting through an issuer the user never enabled. (This mirrors the payment gateway, which only mints through a connected provider — §12.) With the issuer enabled, the handler runs the silent KYA flow (§7) and retries the transport on success.</li>
 </ol>
 <h3>6.4 Transport selection</h3>
-<p><code>connectRemote</code> tries <strong>StreamableHTTP first, then SSE</strong>
-(<code>index.ts</code>). Important
-nuances:</p>
+<p>The agent tries <strong>StreamableHTTP first, then SSE</strong>. Important nuances:</p>
 <ul>
-<li>A 401 on the StreamableHTTP attempt sets <code>stopTransportFallback = true</code>
-(<code>index.ts</code>) — the server clearly
-speaks HTTP and just needs auth, so we <strong>never</strong> fall back to SSE (which would
-404 and mask the real auth/KYA failure).</li>
-<li>KYA is only attempted on the <strong>StreamableHTTP</strong> branch, once per connect, and
-only when the §7.1 guards pass.</li>
-<li>A transport cannot be reused after a failed connect, so the post-KYA retry
-builds a <strong>fresh</strong> StreamableHTTP transport
-(<code>freshStreamable</code>); the auth
-provider&#39;s <code>tokens()</code> now returns the token <code>trySilentKya</code> just stored.</li>
+<li>A 401 on the StreamableHTTP attempt <strong>disables the SSE fallback</strong> — the server clearly speaks HTTP and just needs auth, so falling back to SSE (which would 404) would mask the real auth/KYA failure.</li>
+<li>KYA is only attempted on the <strong>StreamableHTTP</strong> branch, once per connect, and only when the §7.1 guards pass.</li>
+<li>A transport cannot be reused after a failed connect, so the post-KYA retry builds a <strong>fresh</strong> StreamableHTTP transport; the credential layer now returns the token the silent flow just stored.</li>
 </ul>
 <hr>
-<h2>7. The Silent KYA Flow (<code>trySilentKya</code>)</h2>
-<p><code>trySilentKya</code> is an Effect that
-returns a <code>KyaMintResult</code>:</p>
-<pre><code class="language-ts">type KyaMintResult =
-  | { minted: true; kyaAdvertised: true } // success
-  | { minted: false; kyaAdvertised: false } // KYA not advertised → caller may fall back
-  | { minted: false; kyaAdvertised: true; error: string } // KYA advertised but minting failed → hard fail
+<h2>7. The Silent KYA Flow</h2>
+<p>The silent KYA flow returns one of three outcomes:</p>
+<pre><code>minted: true,  kyaAdvertised: true                 // success
+minted: false, kyaAdvertised: false                // KYA not advertised → caller may fall back
+minted: false, kyaAdvertised: true, error: "…"     // KYA advertised but minting failed → hard fail
 </code></pre>
-<p>The <code>kyaAdvertised</code> flag drives the gating logic (§9): it tells the caller
-whether a failure should hard-fail or fall through to interactive OAuth.</p>
+<p>The <code>kyaAdvertised</code> flag drives the gating logic (§9): it tells the caller whether
+a failure should hard-fail or fall through to interactive OAuth.</p>
 <h3>7.1 When the KYA branch runs (guards)</h3>
 <p>The 401 handler only enters the KYA branch when <strong>all</strong> of these hold:</p>
 <ul>
 <li>the failing attempt is <strong>StreamableHTTP</strong> (not SSE);</li>
-<li>KYA hasn&#39;t already been retried this connect (<code>!kyaRetried</code>);</li>
-<li>the server does <strong>not</strong> itself advertise KYA (<code>!hasKyaCapability(mcp)</code>) — the
-issuer authenticates with its own <code>skyfire-api-key</code> header, so minting a KYA
-token just to reach the KYA minter would be a chicken-and-egg deadlock;</li>
-<li>OAuth isn&#39;t explicitly disabled (<code>oauth !== false</code>);</li>
-<li>the server has no static <code>headers</code> configured — a server you authenticate with
-your own header/API key isn&#39;t a KYA target.</li>
+<li>KYA hasn't already been retried this connect;</li>
+<li>the server does <strong>not</strong> itself advertise KYA — the issuer authenticates with its own API-key header, so minting a KYA token just to reach the KYA minter would be a chicken-and-egg deadlock;</li>
+<li>OAuth isn't explicitly disabled (<code>oauth !== false</code>);</li>
+<li>the server has no static <code>headers</code> configured — a server you authenticate with your own header/API key isn't a KYA target.</li>
 </ul>
-<p>Servers that fail any guard skip KYA entirely and follow the ordinary
-connect/auth path.</p>
+<p>Servers that fail any guard skip KYA entirely and follow the ordinary connect/auth
+path.</p>
 <h3>7.2 Phase B — Discovery &amp; advertisement gate</h3>
-<p>Discovery lives in <code>detectKyaSupport</code> (<code>index.ts</code>),
-shared by both the consent gate in the 401 handler (§6.3) and <code>trySilentKya</code>&#39;s
-mint preflight. It returns <code>{ supportsKya, authServer, sellerServiceId }</code>:</p>
+<p>Discovery is shared by both the consent gate (§6.3) and the mint preflight. It
+yields <code>{ supportsKya, authServer, sellerServiceId }</code>:</p>
 <ol>
-<li><p><strong>B1–B2 probe.</strong> <code>probeResourceMetadataUrl</code>
-does <code>POST &lt;serverUrl&gt;</code> with a minimal JSON-RPC <code>initialize</code> body and no
-<code>Authorization</code>. If the response is <code>401</code>, it reads the
-<code>resource_metadata=&quot;…&quot;</code> pointer from the <code>WWW-Authenticate</code> header (RFC 9728).
-If there&#39;s no 401 or no pointer, it returns <code>undefined</code> and the caller falls
-back to the default well-known location:
-<code>&lt;origin&gt;/.well-known/oauth-protected-resource</code>.</p>
-</li>
-<li><p><strong>B3–B4 protected-resource metadata.</strong> <code>GET</code> the resource-metadata URL. The
-response is expected to contain:</p>
-<ul>
-<li><code>authorization_servers: string[]</code> → the Resource AS origin (<code>authServers[0]</code>).</li>
-<li>optionally <code>seller_service_id</code> → a seller identity the resource advertises
-for itself (<code>index.ts</code>).
-If there&#39;s no auth server, <code>supportsKya: false</code> and the flow short-circuits.</li>
-</ul>
-</li>
-<li><p><strong>B5–B6 AS metadata.</strong> <code>GET &lt;authServer&gt;/.well-known/oauth-authorization-server</code>
-(RFC 8414), falling back to <code>/.well-known/openid-configuration</code>. From the
-metadata we read <code>authorization_grant_profiles_supported</code> and check whether it
-advertises the KYA profile via
-<code>authorizationGrantProfilesSupported</code>
-(which normalizes both the full URN
-<code>urn:ietf:params:oauth:grant-profile:kya</code> and the short token <code>kya</code>).</p>
-</li>
+<li><strong>B1–B2 probe.</strong> <code>POST &lt;serverUrl&gt;</code> with a minimal JSON-RPC <code>initialize</code> body and no <code>Authorization</code>. If the response is <code>401</code>, read the <code>resource_metadata="…"</code> pointer from the <code>WWW-Authenticate</code> header (RFC 9728). If there's no 401 or no pointer, fall back to the default well-known location: <code>&lt;origin&gt;/.well-known/oauth-protected-resource</code>.</li>
 </ol>
-<p><strong>The advertisement gate:</strong> if <code>profiles</code> does not include <code>kya</code>,
-<code>supportsKya</code> is false and <code>trySilentKya</code> returns
-<code>{ minted: false, kyaAdvertised: false }</code> — KYA is skipped and the caller may
-fall back to interactive OAuth (<code>index.ts</code>).
-Once we pass this gate, the internal <code>advertised</code> flag is set to <code>true</code>
-(<code>index.ts</code>), which guarantees any
+<ol>
+<li><strong>B3–B4 protected-resource metadata.</strong> <code>GET</code> the resource-metadata URL. The response is expected to contain: - <code>authorization_servers: string[]</code> → the Resource AS origin (<code>[0]</code>). - optionally <code>seller_service_id</code> → a seller identity the resource advertises for itself. If there's no auth server, <code>supportsKya: false</code> and the flow short-circuits.</li>
+</ol>
+<ol>
+<li><strong>B5–B6 AS metadata.</strong> <code>GET &lt;authServer&gt;/.well-known/oauth-authorization-server</code> (RFC 8414), falling back to <code>/.well-known/openid-configuration</code>. Read <code>authorization_grant_profiles_supported</code> and check whether it advertises the KYA profile (normalizing both the full URN <code>urn:ietf:params:oauth:grant-profile:kya</code> and the short token <code>kya</code>).</li>
+</ol>
+<p><strong>The advertisement gate:</strong> if the profiles do not include <code>kya</code>, <code>supportsKya</code> is
+false and the flow returns <code>{ minted: false, kyaAdvertised: false }</code> — KYA is
+skipped and the caller may fall back to interactive OAuth. Once past this gate, any
 <em>subsequent</em> thrown failure is reported as <code>kyaAdvertised: true</code> (see §7.6).</p>
 <blockquote>
-<p>All of Phase B is wrapped in a <code>try/catch</code> that resolves to
-<code>{ supportsKya: false }</code> on error (<code>index.ts</code>),
-so a discovery/network failure degrades to &quot;KYA not advertised,&quot; not a hard
-error.</p>
+<p>All of Phase B is wrapped so a discovery/network failure degrades to "KYA not advertised," not a hard error.</p>
 </blockquote>
 <h3>7.3 Seller selector resolution</h3>
-<p><code>index.ts</code>. Priority:</p>
+<p>The issuer tool requires <strong>exactly one</strong> seller selector. Priority:</p>
 <ol>
-<li><strong><code>OPENCODE_KYA_SELLER_SERVICE_ID</code></strong> env override → <code>{ sellerServiceId }</code>.</li>
+<li><strong>Explicit override</strong> (a configured <code>sellerServiceId</code> UUID) → <code>{ sellerServiceId }</code>.</li>
 <li><strong><code>seller_service_id</code></strong> advertised by the protected-resource metadata → <code>{ sellerServiceId }</code>.</li>
-<li><strong>Derived from the target MCP URL</strong> → <code>{ sellerDomainOrUrl }</code>, via
-<code>kyaSellerDomainOrUrl</code>: the
-target&#39;s hostname, except <strong>loopback / RFC 1918 private ranges</strong> are
-substituted with the placeholder <code>mcp-server.com</code> (because Skyfire&#39;s seller
-directory can&#39;t resolve localhost). The recognized &quot;local&quot; set: <code>localhost</code>,
-<code>127.0.0.1</code>, <code>::1</code>, <code>0.0.0.0</code>, <code>*.localhost</code>, <code>127.*</code>, <code>10.*</code>, <code>192.168.*</code>,
-<code>172.16–31.*</code>.</li>
+<li><strong>Derived from the target MCP URL</strong> → <code>{ sellerDomainOrUrl }</code>: the target's hostname, except <strong>loopback / RFC 1918 private ranges</strong> are substituted with a placeholder domain registered in the issuer's seller directory (because the directory can't resolve localhost). The recognized "local" set: <code>localhost</code>, <code>127.0.0.1</code>, <code>::1</code>, <code>0.0.0.0</code>, <code>*.localhost</code>, <code>127.*</code>, <code>10.*</code>, <code>192.168.*</code>, <code>172.16–31.*</code>.</li>
 </ol>
-<p>The Skyfire <code>create-kya-token</code> tool requires <strong>exactly one</strong> seller selector.</p>
 <h3>7.4 Phase C — Mint the KYA assertion</h3>
-<p><code>index.ts</code>:</p>
 <ol>
-<li>If <code>args.issuer</code> is undefined → return
-<code>{ minted: false, kyaAdvertised: true, error: &quot;KYA supported but no issuer configured…&quot; }</code>.</li>
-<li>Connect to the issuer via a <code>StreamableHTTPClientTransport</code> carrying
-<code>issuer.config.headers</code> (the <code>skyfire-api-key</code>)
-(<code>index.ts</code>).</li>
-<li><code>callTool({ name: issuer.tool, arguments: sellerArg })</code>, with the client
-closed afterward via <code>Effect.ensuring</code>
-(<code>index.ts</code>).</li>
-<li>Concatenate the text content of the result and extract the JWT with
-<code>extractJwtFromText</code> — a regex
-matching a three-segment <code>xxx.yyy.zzz</code> token. (The Skyfire tool currently
-returns a human-readable string like
-<code>&quot;Creation of KYA token for &lt;id&gt; is complete: &lt;jwt&gt;&quot;</code>.) No JWT → error result.</li>
+<li>If no issuer is configured → return <code>{ minted: false, kyaAdvertised: true, error: "KYA supported but no issuer configured…" }</code>.</li>
+<li>Connect to the issuer via a StreamableHTTP transport carrying the issuer's <code>headers</code> (the API key).</li>
+<li><code>callTool({ name: issuer.tool, arguments: sellerSelector })</code>, closing the issuer client afterward.</li>
+<li>Concatenate the text content of the result and extract the JWT — a three-segment <code>xxx.yyy.zzz</code> token. (The issuer tool may return a human-readable string such as <code>"Creation of KYA token for &lt;id&gt; is complete: &lt;jwt&gt;"</code>.) No JWT → error result.</li>
 </ol>
 <h3>7.5 Phase D — Exchange &amp; store</h3>
-<p><code>index.ts</code>:</p>
 <ol>
-<li><p><strong>Re-fetch the AS metadata for the <code>token_endpoint</code></strong>
-(<code>index.ts</code>). Missing
-<code>token_endpoint</code> → error result.</p>
-<blockquote>
-<p><strong>Why re-fetch?</strong> Phase B (§7.2) already fetched the same AS metadata, but it
-only kept <code>supportsKya</code> and the <code>authServer</code> origin from it, not the
-<code>token_endpoint</code>. Phase D re-fetches <code>&lt;authServer&gt;/.well-known/oauth-authorization-server</code>
-to read <code>token_endpoint</code>. The two phases don&#39;t share the parsed metadata
-object, so this is a redundant round-trip: harmless, but visible when you
-trace network calls.</p>
-</blockquote>
-</li>
-<li><p><code>POST &lt;token_endpoint&gt;</code> with
-<code>content-type: application/x-www-form-urlencoded</code> and body:</p>
-<pre><code>grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
-assertion=&lt;kya_jwt&gt;
-</code></pre>
-<p>A non-2xx throws <code>OAuth token exchange failed (&lt;status&gt;): &lt;body&gt;</code>
-(<code>index.ts</code>).</p>
-<blockquote>
-<p><strong>The exchange is client-unauthenticated.</strong> The request carries <em>only</em>
-<code>grant_type</code> and <code>assertion</code> — there is <strong>no</strong> <code>client_id</code>/<code>client_secret</code>, no
-<code>Authorization</code> header, and <strong>no <code>scope</code> parameter</strong>. All trust derives from
-the issuer-signed assertion; the AS is responsible for validating its
-signature, issuer, expiry, and replay (<code>jti</code>). Because no scope is requested,
-the AS assigns a default scope (the mock uses <code>mcp</code>).</p>
-</blockquote>
-</li>
-<li><p>Read <strong><code>access_token</code></strong> from the JSON response. Missing → error result.</p>
-<blockquote>
-<p><strong>The rest of the token response is discarded.</strong> Even though the AS returns
-<code>expires_in</code>, <code>scope</code>, and possibly <code>refresh_token</code>, the silent path persists
-only the access token —
-<code>{ accessToken, refreshToken: undefined, expiresAt: undefined, scope: undefined }</code>
-(<code>index.ts</code>). See
-§7.7 for the consequences (no local expiry tracking, no refresh).</p>
-</blockquote>
-</li>
-<li><p>Persist via
-<code>auth.updateTokens(name, { accessToken }, origin)</code>.
-<strong>The token is keyed by the server&#39;s URL origin</strong>, matching the normalization
-the OAuth provider does (§8.1), so a later <code>tokens()</code> lookup finds it.</p>
-</li>
-<li><p>Return <code>{ minted: true, kyaAdvertised: true }</code>.</p>
-</li>
+<li><strong>Read the AS <code>token_endpoint</code></strong> from the AS metadata. Missing → error result.</li>
+<li><code>POST &lt;token_endpoint&gt;</code> with <code>content-type: application/x-www-form-urlencoded</code> and body:</li>
 </ol>
-<blockquote>
-<p><strong>Two implementations of the exchange exist.</strong> The silent connect path above is
-an <strong>inline</strong> copy inside <code>trySilentKya</code>. A second, <em>standalone</em> implementation
-lives in <code>exchangeAssertionForAccessToken</code>
-(plus <code>discoverResourceAuthServer</code>)
-and is used <strong>only</strong> by the CLI <code>mcp debug</code> command (§14.3). The two are parallel
-— they implement the same RFC 7523 request — but they do <strong>not</strong> share code.
-Editing the <code>kya.ts</code> helper does <strong>not</strong> change the connect-path behavior, and
-vice versa. Keep them in sync when changing the exchange contract.</p>
-</blockquote>
-<h3>7.6 Failure semantics &amp; the <code>advertised</code> flag</h3>
-<p>The whole generator is wrapped in <code>Effect.catch</code>
-(<code>index.ts</code>):</p>
+<p>   ``<code>
+   grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer
+   assertion=&lt;kya_jwt&gt;
+   </code>``</p>
+<p>   A non-2xx throws <code>OAuth token exchange failed (&lt;status&gt;): &lt;body&gt;</code>.</p>
+<p>   &gt; <strong>The exchange is client-unauthenticated.</strong> The request carries <em>only</em>
+   &gt; <code>grant_type</code> and <code>assertion</code> — there is <strong>no</strong> <code>client_id</code>/<code>client_secret</code>, no
+   &gt; <code>Authorization</code> header, and <strong>no <code>scope</code> parameter</strong>. All trust derives from
+   &gt; the issuer-signed assertion; the AS validates its signature, issuer, expiry,
+   &gt; and replay (<code>jti</code>). Because no scope is requested, the AS assigns a default
+   &gt; scope.</p>
+<ol>
+<li>Read <strong><code>access_token</code></strong> from the JSON response. Missing → error result.</li>
+</ol>
+<p>   &gt; <strong>The rest of the token response is discarded.</strong> Even though the AS returns
+   &gt; <code>expires_in</code>, <code>scope</code>, and possibly <code>refresh_token</code>, the silent path persists
+   &gt; only the access token. See §7.7 for the consequences (no local expiry
+   &gt; tracking, no refresh).</p>
+<ol>
+<li>Persist the token <strong>keyed by the server's URL origin</strong>, matching the normalization the credential layer uses (§8.1), so a later lookup finds it.</li>
+<li>Return <code>{ minted: true, kyaAdvertised: true }</code>.</li>
+</ol>
+<h3>7.6 Failure semantics &amp; the advertised flag</h3>
 <ul>
-<li>If the <code>advertised</code> flag was set (we passed the §7.2 gate), any thrown failure
-(issuer connect, tool call, token exchange) becomes
-<code>{ minted: false, kyaAdvertised: true, error }</code>. This is deliberate: a genuine
-KYA failure must <strong>not</strong> silently degrade to interactive OAuth.</li>
+<li>If discovery passed the §7.2 advertisement gate, any thrown failure (issuer connect, tool call, token exchange) becomes <code>{ minted: false, kyaAdvertised: true, error }</code>. This is deliberate: a genuine KYA failure must <strong>not</strong> silently degrade to interactive OAuth.</li>
 <li>Otherwise → <code>{ minted: false, kyaAdvertised: false }</code>.</li>
 </ul>
-<p>Both BEGIN/END of the flow are logged with <code>===== KYA auth flow BEGIN/END =====</code>
-banners (<code>index.ts</code>,
-<code>index.ts</code>).</p>
 <h3>7.7 Lifetime of a KYA-minted token (no local expiry, no refresh)</h3>
-<p>Because Phase D stores <code>expiresAt: undefined</code> and <code>refreshToken: undefined</code>:</p>
+<p>Because Phase D stores no <code>expiresAt</code> and no <code>refreshToken</code>:</p>
 <ul>
-<li><code>isTokenExpired</code> returns <code>false</code>
-for a KYA-minted token (it returns <code>false</code> whenever <code>expiresAt</code> is unset), so
-<code>getAuthStatus</code> reports
-<strong><code>authenticated</code></strong> indefinitely — even after the AS-issued <code>expires_in</code> has
-actually elapsed.</li>
-<li>OpenCode therefore does <strong>not</strong> proactively re-mint on a timer. A stale token is
-only replaced when the <strong>MCP server rejects it with a 401</strong>, which re-enters the
-connect flow and runs <code>trySilentKya</code> again (a fresh mint).</li>
-<li>There is no refresh-token path for KYA tokens; &quot;refresh&quot; is always a full
-re-mint via the issuer.</li>
+<li>The token reads as <strong>authenticated indefinitely</strong> in status checks — even after the AS-issued <code>expires_in</code> has actually elapsed.</li>
+<li>The agent therefore does <strong>not</strong> proactively re-mint on a timer. A stale token is replaced only when the <strong>MCP server rejects it with a 401</strong>, which re-enters the connect flow and runs the silent KYA flow again (a fresh mint).</li>
+<li>There is no refresh-token path for KYA tokens; "refresh" is always a full re-mint via the issuer.</li>
 </ul>
 <hr>
-<h2>8. The OAuth Provider (<code>McpOAuthProvider</code>)</h2>
-<p><code>McpOAuthProvider</code> implements
-the MCP SDK&#39;s <code>OAuthClientProvider</code>. It is used for both the auto-connect
-transport and the interactive <code>startAuth</code> flow.</p>
+<h2>8. The OAuth Client-Provider Role</h2>
+<p>The agent supplies an OAuth client-provider to the MCP transport, used for both
+the auto-connect transport and the interactive flow. Its responsibilities:</p>
 <h3>8.1 URL/origin normalization</h3>
-<p>The constructor normalizes <code>serverUrl</code> to its <strong>origin</strong>
-(<code>oauth-provider.ts</code>).
-The SDK treats the provider&#39;s server URL as the <em>origin</em> where <code>/.well-known/*</code>
-lives, but MCP transport URLs often include the <code>/mcp</code> path. Normalizing to the
-origin ensures (a) discovery doesn&#39;t 404 on <code>/mcp/.well-known/*</code>, and (b) tokens
-stored out-of-band by KYA (keyed by origin) are matched by <code>getForUrl()</code> here.</p>
+<p>Normalize the server URL to its <strong>origin</strong>. The transport treats the provider's
+server URL as the <em>origin</em> where <code>/.well-known/*</code> lives, but MCP transport URLs
+often include a <code>/mcp</code> path. Normalizing to the origin ensures (a) discovery
+doesn't 404 on <code>/mcp/.well-known/*</code>, and (b) tokens stored out-of-band by KYA
+(keyed by origin) are matched on lookup.</p>
 <h3>8.2 Token &amp; client storage</h3>
 <ul>
-<li><code>tokens()</code> (<code>oauth-provider.ts</code>)
-reads via <code>auth.getForUrl(name, origin)</code>. <code>getForUrl</code>
-(<code>auth.ts</code>) returns the
-entry <strong>only if its stored <code>serverUrl</code> matches</strong> — preventing token reuse
-across a changed URL.</li>
-<li><code>saveTokens()</code> persists access/refresh/expiry/scope.</li>
-<li><code>clientInformation()</code> (<code>oauth-provider.ts</code>)
-prefers a configured <code>clientId</code>, else a stored dynamically-registered client
-(re-registering if the secret expired).</li>
-<li><code>saveClientInformation()</code> stores DCR results.</li>
-<li><code>codeVerifier</code> / <code>state</code> are persisted for PKCE + CSRF. <code>state()</code>
-(<code>oauth-provider.ts</code>)
-is a <em>generator</em>: the SDK calls it to both read and mint state, so it creates a
-random 32-byte hex value if none is saved.</li>
+<li><strong>Token read</strong> returns the stored entry <strong>only if its stored origin matches</strong> — preventing token reuse across a changed URL.</li>
+<li><strong>Token save</strong> persists access/refresh/expiry/scope.</li>
+<li><strong>Client information</strong> prefers a configured <code>clientId</code>, else a stored dynamically-registered client (re-registering if the secret expired).</li>
+<li><strong>PKCE/CSRF state</strong> (<code>codeVerifier</code>, <code>state</code>) is persisted; <code>state</code> is minted randomly if none is saved.</li>
 </ul>
 <h3>8.3 Discovery via <code>WWW-Authenticate</code></h3>
-<p><code>ensureDiscoveryViaWwwAuthenticate</code>
-proactively <code>POST</code>s to <code>&lt;origin&gt;/mcp</code> to provoke a 401, then throws the SDK&#39;s
-<code>UnauthorizedError</code> so the SDK parses the advertised metadata. This avoids a
-confusing &quot;Invalid OAuth error response&quot; when an MCP origin returns a plain-text
-404 for <code>/.well-known/*</code>. It&#39;s best-effort and called from <code>clientInformation()</code>.</p>
+<p>The provider may proactively <code>POST</code> to the origin to provoke a 401, then surface
+an Unauthorized error so the transport parses the advertised metadata. This avoids
+a confusing "Invalid OAuth error response" when an MCP origin returns a plain-text
+404 for <code>/.well-known/*</code>.</p>
 <h3>8.4 Grant-profile hooks are intentionally inert</h3>
-<p><code>getTokensForMetadata()</code> and <code>prepareTokenRequest()</code>
-(<code>oauth-provider.ts</code>)
-<strong>return <code>undefined</code> by design</strong>. The KYA jwt-bearer exchange is <strong>not</strong> driven
-through the SDK&#39;s grant-profile hooks; it runs out-of-band in <code>trySilentKya</code>,
-which discovers, mints, exchanges, and <code>saveTokens()</code> <em>before</em> the transport is
-retried. Returning <code>undefined</code> keeps <code>trySilentKya</code> authoritative and lets the
-SDK fall back to interactive <code>authorization_code</code> when KYA is unavailable.
-<code>getTokensForMetadata</code> still logs the advertised profiles for diagnostics.</p>
+<p>The SDK's grant-profile hooks <strong>return nothing by design</strong>. The KYA jwt-bearer
+exchange is <strong>not</strong> driven through those hooks; it runs out of band in the silent
+KYA flow, which discovers, mints, exchanges, and stores the token <em>before</em> the
+transport is retried. This keeps the silent flow authoritative and lets the SDK
+fall back to interactive <code>authorization_code</code> when KYA is unavailable.</p>
 <hr>
 <h2>9. Decision Matrix (Gating Logic)</h2>
 <p>For an auth-required remote server that passes the §7.1 guards, the 401 handler
-resolves in this order. &quot;Usable issuer&quot; means an issuer is configured <strong>and</strong>
+resolves in this order. "Usable issuer" means an issuer is configured <strong>and</strong>
 enabled (connected).</p>
 <table>
 <thead>
@@ -631,11 +411,12 @@ enabled (connected).</p>
 <th>KYA advertised?</th>
 <th>Consent given?</th>
 <th>Usable issuer?</th>
-<th><code>OPENCODE_KYA_INTERACTIVE_FALLBACK</code></th>
+<th>Interactive fallback enabled?</th>
 <th>Outcome</th>
 </tr>
 </thead>
-<tbody><tr>
+<tbody>
+<tr>
 <td>No</td>
 <td>—</td>
 <td>—</td>
@@ -677,237 +458,147 @@ enabled (connected).</p>
 <td>set</td>
 <td><strong>Interactive OAuth</strong> (<code>needs_auth</code>)</td>
 </tr>
-</tbody></table>
-<p>Where this is enforced (all in the <code>connectRemote</code> 401 handler unless noted):</p>
-<ul>
-<li><strong>No KYA advertised → fallback.</strong> <code>detectKyaSupport</code> reports <code>supportsKya: false</code>;
-the handler sets <code>needs_auth</code>.</li>
-<li><strong>KYA advertised, not yet consented.</strong> The handler sets <code>needs_kya_consent</code> and
-stops before any mint.</li>
-<li><strong>Consented but no usable issuer (default).</strong> If the issuer is configured but
-not enabled, or not configured at all, the handler sets <code>failed</code> with a message
-that says which (enable the existing issuer, or add one). The fallback flag
-flips this to interactive instead.</li>
-<li><strong>Consented, usable issuer, mint failed.</strong> <code>trySilentKya</code> returns
-<code>kyaAdvertised: true</code> with an error; the handler surfaces it as <code>failed</code>.</li>
-</ul>
-<p>Rationale: KYA is the intended non-interactive path. Silently dropping to a
-browser prompt when KYA was <em>supposed</em> to work would hide real failures, so the
-default is &quot;KYA or bust&quot; with an explicit opt-out flag. Requiring consent and an
-enabled issuer keeps minting deliberate and tied to a validated issuer.</p>
+</tbody>
+</table>
+<p>Rationale: KYA is the intended non-interactive path. Silently dropping to a browser
+prompt when KYA was <em>supposed</em> to work would hide real failures, so the default is
+"KYA or bust" with an explicit opt-out (the interactive-fallback toggle). Requiring
+consent and an enabled issuer keeps minting deliberate and tied to a validated
+issuer.</p>
 <hr>
 <h2>10. Interactive OAuth Fallback</h2>
-<p>When the matrix lands on interactive OAuth, the flow is the standard
-Authorization Code + PKCE, driven by the SDK + <code>McpOAuthProvider</code> + the loopback
+<p>When the matrix lands on interactive OAuth, the flow is the standard Authorization
+Code + PKCE, driven by the transport's OAuth client-provider and a loopback
 callback server.</p>
-<h3>10.1 <code>startAuth</code></h3>
-<p><code>startAuth</code>:</p>
+<h3>10.1 Start</h3>
 <ol>
 <li>Validate the server is remote with OAuth enabled.</li>
-<li>Resolve the effective redirect URI: <code>oauth.redirectUri</code> &gt;
-<code>http://127.0.0.1:&lt;callbackPort&gt;/mcp/oauth/callback</code> &gt; default port 19876.</li>
-<li>Start the loopback callback server
-(<code>McpOAuthCallback.ensureRunning</code>).</li>
-<li>Generate + persist a random <code>oauthState</code>.</li>
-<li>Build a provider whose <code>onRedirect</code> captures the authorization URL, attempt a
-transport connect, and on <code>UnauthorizedError</code> return the captured
-<code>authorizationUrl</code> plus stash the transport in <code>pendingOAuthTransports</code>.</li>
+<li>Resolve the effective redirect URI: <code>oauth.redirectUri</code> &gt; <code>http://127.0.0.1:&lt;callbackPort&gt;/mcp/oauth/callback</code> &gt; a default port.</li>
+<li>Start the loopback callback server.</li>
+<li>Generate and persist a random state value.</li>
+<li>Build a provider whose redirect hook captures the authorization URL, attempt a transport connect, and on Unauthorized return the captured URL.</li>
 </ol>
-<h3>10.2 <code>authenticate</code></h3>
-<p><code>authenticate</code>:</p>
+<h3>10.2 Authenticate</h3>
 <ul>
-<li>If <code>startAuth</code> returned <strong>no</strong> URL (already authorized), it lists tools and
-stores the client directly.</li>
-<li>Otherwise it opens the browser
-(<code>open(result.authorizationUrl)</code>),
-waits for the loopback callback
-(<code>waitForCallback</code>),
-<strong>validates the returned state against the stored state</strong> (CSRF defense,
-<code>index.ts</code>), and
-calls <code>finishAuth</code>.</li>
-<li>If the browser can&#39;t be opened, it publishes <code>BrowserOpenFailed</code> so the CLI can
-print the URL for manual opening
-(<code>index.ts</code>).</li>
+<li>If the start step returned <strong>no</strong> URL (already authorized), list tools and store the client directly.</li>
+<li>Otherwise open the browser at the authorization URL, wait for the loopback callback, <strong>validate the returned state against the stored state</strong> (CSRF defense), and finish.</li>
+<li>If the browser can't be opened, surface an event so the URL can be printed for manual opening.</li>
 </ul>
-<h3>10.3 <code>finishAuth</code></h3>
-<p><code>finishAuth</code>: retrieves the
-pending transport, calls <code>transport.finishAuth(code)</code> (the SDK exchanges the code
-at <code>/token</code> with the PKCE verifier and stores tokens via the provider), clears
-the code verifier, and <code>createAndStore</code>s the now-authenticated client.</p>
+<h3>10.3 Finish</h3>
+<p>Retrieve the pending transport, exchange the code at <code>/token</code> with the PKCE
+verifier (the SDK does this and stores tokens via the provider), clear the code
+verifier, and store the now-authenticated client.</p>
 <h3>10.4 The callback server</h3>
-<p><code>oauth-callback.ts</code> is a singleton
-<code>http</code> server on the redirect port (default 19876). Key behaviors:</p>
+<p>A singleton <code>http</code> server on the redirect port. Key behaviors:</p>
 <ul>
-<li>Only the configured <code>currentPath</code> is honored; everything else 404s.</li>
-<li><strong>State is mandatory</strong> — a missing <code>state</code> is rejected as a potential CSRF
-attack (<code>oauth-callback.ts</code>),
-and an unknown state is rejected
-(<code>oauth-callback.ts</code>).</li>
-<li>Pending callbacks are keyed by <code>oauthState</code>, with a reverse <code>mcpName → state</code>
-index so <code>cancelPending(mcpName)</code> can find them. Default timeout: <strong>5 minutes</strong>.</li>
+<li>Only the configured callback path is honored; everything else 404s.</li>
+<li><strong>State is mandatory</strong> — a missing or unknown state is rejected as a potential CSRF attack.</li>
+<li>Pending callbacks are keyed by state, with a reverse <code>server → state</code> index so a pending request can be cancelled. Default timeout: <strong>5 minutes</strong>.</li>
 <li>Serves friendly success/error HTML; the success page auto-closes the tab.</li>
 </ul>
 <blockquote>
-<p><strong>Loopback limitation:</strong> the redirect lands on <code>127.0.0.1:&lt;port&gt;</code> on the
-<strong>server</strong> host. The interactive flow therefore only completes when the browser
-and instance server share a machine, unless a custom <code>oauth.redirectUri</code> is
-configured. The silent KYA flow has no such limitation (no browser).</p>
+<p><strong>Loopback limitation:</strong> the redirect lands on <code>127.0.0.1:&lt;port&gt;</code> on the <strong>agent</strong> host. The interactive flow therefore only completes when the browser and agent share a machine, unless a custom <code>oauth.redirectUri</code> is configured. The silent KYA flow has no such limitation (no browser).</p>
 </blockquote>
 <hr>
-<h2>11. Token Storage (<code>McpAuth</code>)</h2>
-<p><code>McpAuth</code> persists to
-<code>~/.local/share/opencode/mcp-auth.json</code> with mode <code>0o600</code>
-(<code>auth.ts</code>,
-<code>auth.ts</code>). Each entry
-(<code>Entry</code>) holds:</p>
-<pre><code class="language-ts">{ tokens?, clientInfo?, codeVerifier?, oauthState?, serverUrl? }
+<h2>11. Token Storage</h2>
+<p>Tokens, client registrations, and PKCE/CSRF state are persisted to a
+mode-restricted store outside the project tree (e.g. owner-only, mode <code>0o600</code>).
+Each entry holds:</p>
+<pre><code>{ tokens?, clientInfo?, codeVerifier?, oauthState?, serverUrl? }
 </code></pre>
 <ul>
 <li><code>tokens</code> = <code>{ accessToken, refreshToken?, expiresAt?, scope? }</code>.</li>
-<li><code>serverUrl</code> is stamped on write and checked by <code>getForUrl</code> — the mechanism that
-binds a token to a specific origin and lets the KYA-stored token (keyed by
-origin) be picked up by the provider.</li>
-<li><code>isTokenExpired</code> returns <code>null</code> if no token, <code>false</code> if no expiry, else
-<code>expiresAt &lt; now</code>.</li>
+<li><code>serverUrl</code> is stamped on write and checked on read — the mechanism that binds a token to a specific origin and lets the KYA-stored token (keyed by origin) be picked up by the credential layer.</li>
+<li>Expiry check: no token → unknown; no expiry → not expired; else <code>expiresAt &lt; now</code>.</li>
 </ul>
-<p>Wipe all stored MCP auth for a clean test:</p>
-<pre><code class="language-sh">rm ~/.local/share/opencode/mcp-auth.json
-</code></pre>
+<p>Clearing the store forces a clean re-auth on the next connect.</p>
 <hr>
-<h2>12. Payment Gateway (<code>org.kyapay:pay</code>) — Sibling Feature</h2>
-<p>The gateway reuses the capability machinery at <strong>tool-call time</strong> to mint
-<em>payment</em> tokens. It is wired in via <code>convertMcpTool</code>:
-when any capability is configured, each tool&#39;s <code>execute</code> routes through
-<code>executeWithGateway</code>.</p>
-<p>Flow (<code>gateway.ts</code>):</p>
+<h2>12. Payment Capability (<code>org.kyapay:pay</code>) — Sibling Feature</h2>
+<p>The same capability machinery is reused at <strong>tool-call time</strong> to mint <em>payment</em>
+tokens. When any capability is configured, each tool call routes through a gateway
+wrapper:</p>
 <ol>
 <li>Call the requested tool normally.</li>
-<li>If the result is an error carrying a <code>payments/*</code> signal in <code>_meta</code>
-(<code>parsePaymentSignal</code>) — settlement
-types, total, currency, optional seller id/search — the gateway intercepts.</li>
-<li>Match a settlement type to a provider via longest-prefix match against the
-capability map (<code>findProviderForSettlement</code>).</li>
-<li>Resolve the seller id (from the signal or via the issuer&#39;s <code>find-sellers</code>
-tool — <code>resolveSellerServiceId</code>).</li>
-<li>Call the issuer&#39;s pay tool (e.g. <code>create-pay-token</code>), forwarding amount/currency
-in <code>_meta</code>. If the issuer returns a <strong>mandate</strong> signal
-(<code>parseMandateSignal</code>), open the
-mandate URL in a browser and ask the user to retry.</li>
-<li>Cache the minted token (keyed by settlement type/total/currency, with a 30s
-pre-expiry guard — <code>token cache</code>).</li>
+<li>If the result is an error carrying a <code>payments/*</code> signal in <code>_meta</code> — settlement types, total, currency, optional seller id/search — the gateway intercepts.</li>
+<li>Match a settlement type to a provider via longest-prefix match against the capability map.</li>
+<li>Resolve the seller id (from the signal, or via the issuer's seller-lookup tool).</li>
+<li>Call the issuer's pay tool (e.g. <code>create-pay-token</code>), forwarding amount/currency in <code>_meta</code>. If the issuer returns a <strong>mandate</strong> signal, open the mandate URL in a browser and ask the user to retry.</li>
+<li>Cache the minted token (keyed by settlement type/total/currency, with a small pre-expiry guard).</li>
 <li>Retry the original tool with <code>payments/settlement/token</code> injected in <code>_meta</code>.</li>
 </ol>
 <p>The gateway shares the issuer-hiding rule (§5.3): provider servers are excluded
-from the LLM-visible toolset so the model can&#39;t call the mint tools directly.</p>
+from the model-visible toolset so the model can't call the mint tools directly.</p>
 <blockquote>
-<p><strong>KYA vs. pay:</strong> KYA mints an <em>auth</em> assertion to <em>connect</em> to a server; pay
-mints a <em>payment</em> token to <em>settle a transaction</em> with an already-connected
-server. Both go through the same configured issuer; only the capability URI and
-tool differ.</p>
+<p><strong>KYA vs. pay:</strong> KYA mints an <em>auth</em> assertion to <em>connect</em> to a server; pay mints a <em>payment</em> token to <em>settle a transaction</em> with an already-connected server. Both go through the same configured issuer; only the capability URI and tool differ.</p>
 </blockquote>
 <hr>
-<h2>13. Environment Flags</h2>
-<p>Defined in <code>flag.ts</code>, evaluated at access time:</p>
+<h2>13. Configuration Options</h2>
+<p>Two behaviors are configurable (e.g. via environment), evaluated at access time:</p>
 <table>
 <thead>
 <tr>
-<th>Flag</th>
+<th>Option</th>
 <th>Effect</th>
 </tr>
 </thead>
-<tbody><tr>
-<td><code>OPENCODE_KYA_SELLER_SERVICE_ID</code></td>
-<td>Pins the seller selector to a specific <code>sellerServiceId</code> UUID, overriding URL-derived selection (<code>flag.ts</code>).</td>
+<tbody>
+<tr>
+<td><strong>Seller-service-id override</strong></td>
+<td>Pins the seller selector to a specific <code>sellerServiceId</code> UUID, overriding URL-derived selection.</td>
 </tr>
 <tr>
-<td><code>OPENCODE_KYA_INTERACTIVE_FALLBACK</code></td>
-<td>When set, an auth-required server that advertises KYA but has <strong>no configured issuer</strong> falls through to interactive OAuth instead of hard-failing (<code>flag.ts</code>). Does <strong>not</strong> affect the &quot;no KYA advertised&quot; case (which always falls back) or the &quot;mint failed&quot; case (which always hard-fails).</td>
+<td><strong>Interactive-fallback toggle</strong></td>
+<td>When enabled, an auth-required server that advertises KYA but has <strong>no configured issuer</strong> falls through to interactive OAuth instead of hard-failing. Does <strong>not</strong> affect the "no KYA advertised" case (always falls back) or the "mint failed" case (always hard-fails).</td>
 </tr>
-</tbody></table>
-<p><code>truthy()</code> accepts <code>&quot;1&quot;</code> or <code>&quot;true&quot;</code> (case-insensitive).</p>
+</tbody>
+</table>
 <hr>
-<h2>14. Entry Points</h2>
-<h3>14.1 Web UI</h3>
-<p><code>dialog-select-mcp.tsx</code> and
-<code>status-popover-body.tsx</code>
-toggle servers. On toggle:</p>
+<h2>14. Client Surfaces</h2>
+<p>Any client surface ultimately issues the same connect/auth operations against the
+agent and runs the same KYA detection + consent gate. Typical surfaces:</p>
 <ul>
-<li><code>connected</code> → <code>mcp.disconnect({ name })</code>.</li>
-<li><code>needs_kya_consent</code> → open
-<code>dialog-kya-consent.tsx</code>
-(&quot;Should I use your Skyfire KYA identity to sign you in to <em>name</em>?&quot;). Approving
-calls <code>mcp.connect({ name, kyaConsent: &quot;true&quot; })</code>, which mints and connects.</li>
-<li><code>needs_auth</code> → <code>mcp.auth.authenticate({ name })</code> — drives the <strong>interactive</strong>
-flow (opens browser on the server host; see §10.4 loopback caveat).</li>
-<li>otherwise → <code>mcp.connect({ name })</code>.</li>
+<li><strong>Toggle / connect UI.</strong> On enabling a server: - <code>connected</code> → disconnect. - <code>needs_kya_consent</code> → open a KYA consent prompt ("Use your KYA identity to sign in to <em>name</em>?"). Approving reconnects with the consent flag, which mints and connects. - <code>needs_auth</code> → run the <strong>interactive</strong> flow (opens browser on the agent host; see §10.4 loopback caveat). - otherwise → connect.</li>
 </ul>
-<h3>14.2 HTTP API</h3>
-<pre><code class="language-bash"># Connect. First call on a KYA server returns needs_kya_consent;
-# pass kyaConsent=true to approve the Skyfire sign-in and mint.
-curl -sS -X POST &#39;http://localhost:4096/mcp/&lt;name&gt;/connect?directory=&lt;urlenc&gt;&#39;
-curl -sS -X POST &#39;http://localhost:4096/mcp/&lt;name&gt;/connect?kyaConsent=true&amp;directory=&lt;urlenc&gt;&#39;
-# Status
-curl -sS &#39;http://localhost:4096/mcp?directory=&lt;urlenc&gt;&#39;
-</code></pre>
-<h3>14.3 CLI</h3>
-<p><code>cli/cmd/mcp.ts</code>:</p>
 <ul>
-<li><code>opencode mcp list</code> — servers + status.</li>
-<li><code>opencode mcp auth [name]</code> — interactive OAuth (<code>authenticate</code>).</li>
-<li><code>opencode mcp logout [name]</code> — <code>removeAuth</code>.</li>
-<li><code>opencode mcp add</code> — config wizard.</li>
-<li><code>opencode mcp debug &lt;name&gt;</code> — a standalone diagnostic that probes the server,
-and on 401 runs a CLI-local KYA mint
-(<code>mintKyaAccessToken</code>) using the
-<code>kya.ts</code> helpers (<code>discoverResourceAuthServer</code> + <code>exchangeAssertionForAccessToken</code>),
-stores the token, then proves it by reconnecting and listing tools.</li>
+<li><strong>HTTP API.</strong> A connect endpoint (first call on a KYA server returns <code>needs_kya_consent</code>; a consent flag approves the sign-in and mints) and a status endpoint.</li>
+</ul>
+<ul>
+<li><strong>CLI.</strong> List servers + status, run interactive OAuth, log out, add config, and a standalone diagnostic that probes the server and, on 401, runs a self-contained KYA mint to prove the path end to end.</li>
 </ul>
 <hr>
-<h2>15. Mock Server Reference</h2>
-<p><code>mock-mcp-kya-server.ts</code> runs
-two HTTP servers for local end-to-end testing:</p>
+<h2>15. Reference Test Harness</h2>
+<p>A self-contained mock of the protected MCP server <strong>and</strong> Resource AS is useful for
+end-to-end testing:</p>
 <table>
 <thead>
 <tr>
 <th>Server</th>
-<th>Port</th>
 <th>Endpoints</th>
 </tr>
 </thead>
-<tbody><tr>
+<tbody>
+<tr>
 <td><strong>Mock MCP</strong></td>
-<td>8787</td>
-<td><code>GET /.well-known/oauth-protected-resource</code> (→ AS on 8788), <code>POST /mcp</code> (Bearer-protected JSON-RPC: <code>initialize</code>, <code>tools/list</code> [<code>echo</code>, <code>add</code>], <code>tools/call</code>).</td>
+<td><code>GET /.well-known/oauth-protected-resource</code> (→ AS), <code>POST /mcp</code> (Bearer-protected JSON-RPC: <code>initialize</code>, <code>tools/list</code>, <code>tools/call</code>).</td>
 </tr>
 <tr>
 <td><strong>Mock OAuth AS</strong></td>
-<td>8788</td>
 <td><code>GET /.well-known/oauth-authorization-server</code> &amp; <code>/openid-configuration</code>, <code>GET /authorize</code> (auto-approving, PKCE), <code>POST /register</code> (DCR), <code>POST /token</code> (jwt-bearer <strong>and</strong> authorization_code), <code>POST /introspect</code>.</td>
 </tr>
-</tbody></table>
-<p>Notable behaviors:</p>
+</tbody>
+</table>
+<p>Recommended behaviors for a faithful harness:</p>
 <ul>
-<li><strong><code>MOCK_DISABLE_KYA=1</code></strong> drops <code>kya</code> from <code>authorization_grant_profiles_supported</code>
-and <code>jwt-bearer</code> from <code>grant_types_supported</code>
-(<code>mock</code>), turning
-the AS into a plain OAuth server. That&#39;s how you exercise the interactive fallback.</li>
-<li>The AS <strong>verifies the KYA assertion&#39;s signature</strong> against the real Skyfire QA
-JWKS (<code>https://app-qa.skyfire.xyz/.well-known/jwks.json</code>) and <code>iss</code>
-(<code>verifyKyaAssertion</code>),
-rejects replayed <code>jti</code>s
-(<code>checkAndRememberAssertionJti</code>),
-and requires <code>aid</code>/<code>hid</code> claims.</li>
-<li>The issued access token&#39;s <code>aud</code> is set to the MCP resource URI; the mock MCP
-validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <code>exp</code> + <code>scope</code> before serving
-(<code>mock</code>).</li>
-<li>The 401 challenge advertises the AS metadata via
-<code>WWW-Authenticate: Bearer realm=&quot;mcp&quot;, authorization-uri=&quot;…/.well-known/oauth-authorization-server&quot;</code>.</li>
+<li>A toggle to <strong>drop <code>kya</code></strong> from <code>authorization_grant_profiles_supported</code> and <code>jwt-bearer</code> from <code>grant_types_supported</code>, turning the AS into a plain OAuth server — that's how you exercise the interactive fallback.</li>
+<li>The AS <strong>verifies the KYA assertion's signature</strong> against the issuer's live JWKS and <code>iss</code>, <strong>pins the algorithm</strong> (issuers sign with <code>ES256</code>), checks the header <code>typ</code> and the common claims (<code>env</code>, <code>iat</code>, <code>jti</code>, <code>exp</code>), optionally the seller domain (<code>sdm</code>), rejects replayed <code>jti</code>s, and requires identity claims (<code>aid</code>/<code>hid</code>).</li>
+<li>The issued access token's <code>aud</code> is set to the MCP resource URI; the mock MCP validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <code>exp</code> + <code>scope</code> before serving.</li>
+<li>The 401 challenge advertises the AS metadata via <code>WWW-Authenticate: Bearer realm="mcp", authorization-uri="…/.well-known/oauth-authorization-server"</code>.</li>
 </ul>
 <hr>
 <h2>16. End-to-End Sequence</h2>
 <pre><code class="language-mermaid">sequenceDiagram
     autonumber
-    participant A as Agent (OpenCode)
+    participant A as Agent
     participant M as MCP server (resource)
     participant AS as Resource AS (OAuth)
     participant I as KYA Issuer (Skyfire)
@@ -915,10 +606,10 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
     Note over A: connect(name)
 
     alt server advertises org.kyapay:kya (it IS the issuer)
-        A-&gt;&gt;M: connect with configured headers (skyfire-api-key)
+        A-&gt;&gt;M: connect with configured headers (API key)
         Note over A,M: KYA branch skipped — issuer authenticates itself
     else normal remote server
-        Note over A,AS: Phase B — discovery (detectKyaSupport)
+        Note over A,AS: Phase B — discovery
         A-&gt;&gt;M: POST /mcp (no Authorization) [B1]
         M--&gt;&gt;A: 401 WWW-Authenticate, resource_metadata=… [B2]
         A-&gt;&gt;M: GET /.well-known/oauth-protected-resource [B3]
@@ -928,8 +619,8 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 
         alt KYA advertised
             Note over A: first pass → status = needs_kya_consent
-            Note over A: user approves &quot;Sign in with Skyfire KYA&quot;&lt;br/&gt;→ reconnect with kyaConsent=true
-            alt issuer configured AND enabled (toggled on)
+            Note over A: user approves KYA sign-in&lt;br/&gt;→ reconnect with consent
+            alt issuer configured AND enabled
                 Note over A,I: Phase C — mint KYA assertion
                 A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector) [C1]
                 I--&gt;&gt;A: KYA JWT assertion [C2]
@@ -940,7 +631,7 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
                 A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt; [D3]
                 M--&gt;&gt;A: 200 OK + tools — connected [D4]
             else issuer missing or not enabled
-                alt OPENCODE_KYA_INTERACTIVE_FALLBACK=1
+                alt interactive fallback enabled
                     Note over A: fall through to interactive (below)
                 else default
                     Note over A: status = failed (enable the issuer, or add one)
@@ -949,7 +640,7 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
         else KYA not advertised (or fallback enabled)
             Note over A,AS: Interactive Authorization Code + PKCE
             A-&gt;&gt;AS: GET /authorize?response_type=code&amp;code_challenge=… (browser)
-            AS--&gt;&gt;A: 302 → redirect_uri?code=… (loopback callback :19876)
+            AS--&gt;&gt;A: 302 → redirect_uri?code=… (loopback callback)
             A-&gt;&gt;AS: POST /token grant_type=authorization_code &amp; code_verifier
             AS--&gt;&gt;A: { access_token }
             A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt;
@@ -964,143 +655,98 @@ validates signature + <code>iss</code> + <code>aud</code> + <code>sub</code> + <
 <tr>
 <th>Situation</th>
 <th>Behavior</th>
-<th>Code</th>
 </tr>
 </thead>
-<tbody><tr>
+<tbody>
+<tr>
 <td>Invalid MCP URL</td>
 <td><code>failed</code> immediately</td>
-<td><code>remoteURL</code></td>
 </tr>
 <tr>
 <td>Discovery/network error in Phase B</td>
-<td>Treated as &quot;KYA not advertised&quot; → fallback eligible</td>
-<td><code>detectKyaSupport</code></td>
+<td>Treated as "KYA not advertised" → fallback eligible</td>
 </tr>
 <tr>
 <td>KYA advertised, not yet consented</td>
 <td><code>needs_kya_consent</code> (await approval)</td>
-<td><code>connectRemote</code></td>
 </tr>
 <tr>
 <td>Issuer configured but not enabled</td>
-<td><code>failed</code> (&quot;enable it, then retry&quot;)</td>
-<td><code>connectRemote</code></td>
+<td><code>failed</code> ("enable it, then retry")</td>
 </tr>
 <tr>
 <td>KYA advertised, no usable issuer</td>
 <td><code>failed</code> with actionable message</td>
-<td><code>connectRemote</code></td>
 </tr>
 <tr>
 <td>Issuer returns non-JWT text</td>
-<td><code>failed</code> &quot;Could not extract JWT assertion…&quot;</td>
-<td><code>index.ts</code></td>
+<td><code>failed</code> "Could not extract JWT assertion…"</td>
 </tr>
 <tr>
 <td>AS metadata missing <code>token_endpoint</code></td>
 <td><code>failed</code></td>
-<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Token exchange non-2xx</td>
 <td><code>failed</code> with status + body</td>
-<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>401 on StreamableHTTP</td>
 <td>No SSE fallback; auth path only</td>
-<td><code>stopTransportFallback</code></td>
 </tr>
 <tr>
 <td>Server needs pre-registered client</td>
 <td><code>needs_client_registration</code></td>
-<td><code>index.ts</code></td>
 </tr>
 <tr>
 <td>Interactive: missing/invalid state</td>
 <td>Callback rejected (CSRF)</td>
-<td><code>oauth-callback.ts</code></td>
 </tr>
 <tr>
 <td>Interactive: state mismatch</td>
-<td>Throw &quot;OAuth state mismatch&quot;</td>
-<td><code>index.ts</code></td>
+<td>"OAuth state mismatch"</td>
 </tr>
 <tr>
-<td>Browser won&#39;t open</td>
-<td>Publish <code>BrowserOpenFailed</code>; CLI prints URL</td>
-<td><code>index.ts</code></td>
+<td>Browser won't open</td>
+<td>Surface an event; print URL for manual opening</td>
 </tr>
 <tr>
 <td>Callback timeout</td>
 <td>Reject after 5 min</td>
-<td><code>oauth-callback.ts</code></td>
 </tr>
 <tr>
 <td>Token bound to wrong origin</td>
-<td><code>getForUrl</code> returns undefined → re-auth</td>
-<td><code>auth.ts</code></td>
+<td>Token lookup returns nothing → re-auth</td>
 </tr>
-</tbody></table>
+</tbody>
+</table>
 <hr>
 <h2>18. Security Considerations</h2>
 <ul>
-<li><strong>No secrets in the repo.</strong> The issuer&#39;s <code>skyfire-api-key</code> is supplied via
-<code>{env:…}</code> interpolation; tokens are stored at mode <code>0o600</code> outside the repo.</li>
-<li><strong>CSRF.</strong> Interactive OAuth enforces <code>state</code> both at the callback server and
-again in <code>authenticate</code> (the stored value must match the returned one).</li>
-<li><strong>PKCE.</strong> The interactive flow uses <code>S256</code> code challenges; the mock enforces
-verification.</li>
-<li><strong>Audience binding.</strong> The AS sets the access token&#39;s <code>aud</code> to the MCP
-resource&#39;s canonical URI; the resource validates it as a plain OAuth resource
-server. A token minted for resource X cannot be replayed against resource Y.</li>
-<li><strong>Origin binding of stored tokens.</strong> <code>getForUrl</code> prevents a token saved for one
-origin from being presented to another.</li>
-<li><strong>Replay protection.</strong> The (mock) AS tracks KYA assertion <code>jti</code>s and rejects
-duplicates, modeling the recommended issuer behavior.</li>
-<li><strong>No silent downgrade.</strong> When KYA is advertised, a mint failure surfaces as a
-hard error rather than quietly prompting a human — preventing a downgrade
-attack/confusion where a failing agent flow becomes an interactive one.</li>
-<li><strong>Issuer tool hiding.</strong> Capability-provider servers&#39; tools are withheld from the
-LLM toolset so the model can&#39;t mint tokens directly and bypass the gateway.</li>
+<li><strong>No secrets in the repo.</strong> The issuer's API key is supplied via environment interpolation; tokens are stored mode-restricted outside the project tree.</li>
+<li><strong>CSRF.</strong> Interactive OAuth enforces <code>state</code> both at the callback server and again in the authenticate step (the stored value must match the returned one).</li>
+<li><strong>PKCE.</strong> The interactive flow uses <code>S256</code> code challenges.</li>
+<li><strong>Audience binding.</strong> The AS sets the access token's <code>aud</code> to the MCP resource's canonical URI; the resource validates it as a plain OAuth resource server. A token minted for resource X cannot be replayed against resource Y.</li>
+<li><strong>Origin binding of stored tokens.</strong> Token lookup is origin-checked, preventing a token saved for one origin from being presented to another.</li>
+<li><strong>Assertion validation.</strong> The Resource AS validates the KYA assertion's signature against the issuer's JWKS (pinned algorithm), the issuer, the claim shapes, and rejects duplicate <code>jti</code>s (replay protection).</li>
+<li><strong>No silent downgrade.</strong> When KYA is advertised, a mint failure surfaces as a hard error rather than quietly prompting a human — preventing a downgrade where a failing agent flow becomes an interactive one.</li>
+<li><strong>Issuer tool hiding.</strong> Capability-provider servers' tools are withheld from the model's toolset so it can't mint tokens directly and bypass the gateway.</li>
 </ul>
 <hr>
 <h2>19. Testing</h2>
 <ul>
-<li><strong>Silent KYA (default):</strong> run the mock without <code>MOCK_DISABLE_KYA</code>, configure
-<code>merchant-mcp</code> + a KYA issuer, connect → expect <code>connected</code> with no browser.</li>
-<li><strong>Interactive fallback:</strong> run the mock with <code>MOCK_DISABLE_KYA=1</code>, configure only
-<code>merchant-mcp</code> (no issuer) → connect yields <code>needs_auth</code>; complete via
-<code>opencode mcp auth merchant-mcp</code>. (No flag needed because KYA isn&#39;t advertised.)</li>
-<li><strong>&quot;KYA advertised, no issuer&quot; fallback:</strong> run the mock <em>with</em> KYA, omit the
-issuer, set <code>OPENCODE_KYA_INTERACTIVE_FALLBACK=1</code> → falls through to interactive
-instead of failing.</li>
-<li><strong>Diagnostics:</strong> <code>opencode mcp debug &lt;name&gt;</code> mints + proves a token end to end.</li>
-<li>Full runbook, log markers, and one-command demo (<code>bun run demo:kya</code>) are in
-<code>KYA.md</code>.</li>
+<li><strong>Silent KYA (default):</strong> run the harness with KYA advertised, configure a protected server + a KYA issuer, connect → expect <code>connected</code> with no browser.</li>
+<li><strong>Interactive fallback:</strong> run the harness with KYA disabled, configure only the protected server (no issuer) → connect yields <code>needs_auth</code>; complete via the interactive auth command. (No fallback toggle needed because KYA isn't advertised.)</li>
+<li><strong>"KYA advertised, no issuer" fallback:</strong> run the harness <em>with</em> KYA, omit the issuer, enable the interactive-fallback toggle → falls through to interactive instead of failing.</li>
+<li><strong>Diagnostics:</strong> the standalone debug command mints + proves a token end to end.</li>
 </ul>
 <hr>
 <h2>20. Known Limitations</h2>
 <ul>
-<li><strong>Interactive flow is local-only by default.</strong> The loopback redirect lands on
-the server host. A truly remote web app needs the split
-<code>mcp.auth.start</code> → open-in-user-browser → <code>mcp.auth.callback</code> flow with an
-app-hosted redirect.</li>
-<li><strong>Issuer output parsing is regex-based.</strong> <code>extractJwtFromText</code> scrapes a JWT out
-of a human-readable string. A structured tool result would be more robust.</li>
-<li><strong>First-issuer-wins.</strong> Multiple KYA issuers aren&#39;t disambiguated beyond config
-order.</li>
-<li><strong>No local expiry tracking or refresh for KYA-minted tokens.</strong> <code>trySilentKya</code>
-stores only the access token (<code>expiresAt</code>/<code>refreshToken</code>/<code>scope</code> are dropped), so
-the token reads as <code>authenticated</code> indefinitely and is <strong>not</strong> re-minted on a
-timer — a fresh mint happens only when the MCP server rejects the stale token
-with a 401. See §7.7.</li>
-<li><strong>Demo seller placeholder.</strong> Loopback/private targets are mapped to
-<code>mcp-server.com</code>; real deployments must register their domain (or use
-<code>OPENCODE_KYA_SELLER_SERVICE_ID</code>) in the Skyfire seller directory.</li>
+<li><strong>Interactive flow is local-only by default.</strong> The loopback redirect lands on the agent host. A truly remote client needs a split start → open-in-user-browser → callback flow with a client-hosted redirect.</li>
+<li><strong>Issuer output parsing is regex-based.</strong> The agent scrapes a JWT out of a human-readable issuer-tool result. A structured tool result would be more robust.</li>
+<li><strong>First-issuer-wins.</strong> Multiple KYA issuers aren't disambiguated beyond config order.</li>
+<li><strong>No local expiry tracking or refresh for KYA-minted tokens.</strong> Only the access token is stored, so it reads as <code>authenticated</code> indefinitely and is re-minted only when the MCP server rejects the stale token with a 401. See §7.7.</li>
+<li><strong>Seller placeholder for local targets.</strong> Loopback/private targets are mapped to a placeholder domain; real deployments must register their domain (or pin a <code>sellerServiceId</code>) in the issuer's seller directory.</li>
 </ul>
-<pre><code>
-</code></pre>
-
 </body></html>
