@@ -28,7 +28,7 @@
         },
       },
       "headers": {
-        "skyfire-api-key": "dc737ceb-171f-4ca5-a29d-996ca9070719",
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
       },
     },
   },
