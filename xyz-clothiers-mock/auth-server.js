@@ -58,7 +58,7 @@ const skyfireAlg = process.env.MOCK_SKYFIRE_ALG ?? "ES256"
 // Seller-specific expectations. `sdm` defaults to the demo seller (auth101.dev),
 // `typ` to the KYA token type. Set either to an empty string to skip that check.
 const expectedTyp = process.env.MOCK_SKYFIRE_EXPECTED_TYP ?? "kya+jwt"
-const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "auth101.dev"
+const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "mcp-server"
 const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
 
 // Claim-shape helpers ported from the Skyfire verifyToken example (the example
@@ -286,8 +286,7 @@ const server = http.createServer(async (req, res) => {
 
   if (
     req.method === "GET" &&
-    (url.pathname === "/.well-known/oauth-authorization-server" ||
-      url.pathname === "/.well-known/openid-configuration")
+    (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration")
   ) {
     log("handleDiscovery", "serving AS metadata (RFC 8414)", { path: url.pathname })
     return json(
