@@ -2,7 +2,7 @@
 
 // ---------------------------------------------------------------------------
 // Launcher: starts the auth server (auth-server.js) and the MCP resource
-// (server.js) together in one terminal, with prefixed/colorized output and
+// (mcp-server.js) together in one terminal, with prefixed/colorized output and
 // coordinated shutdown. No external dependency — just child_process.
 //
 //   node dev.js   (or: npm run dev)
@@ -16,7 +16,7 @@ import process from "process"
 
 const children = [
   { name: "auth", file: "auth-server.js", color: "\x1b[36m" }, // cyan
-  { name: "mcp", file: "server.js", color: "\x1b[35m" }, // magenta
+  { name: "mcp", file: "mcp-server.js", color: "\x1b[35m" }, // magenta
 ]
 const RESET = "\x1b[0m"
 // Pad names so the prefixes line up.

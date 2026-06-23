@@ -10,11 +10,11 @@ It mirrors the auth pattern from `../merchant-mcp/merchant.js` (HTTP MCP on `/mc
 
 This directory has two processes:
 
-- **`server.js`** — the mock MCP resource (port `8799`). Serves the swag tools and
+- **`mcp-server.js`** — the mock MCP resource (port `8799`). Serves the swag tools and
   gates the protected ones behind a Bearer access token.
 - **`auth-server.js`** — a mock OAuth Authorization Server (port `8788`). Exchanges a
   **real Skyfire KYA token** for an access token via the `jwt-bearer` grant, then
-  `server.js` accepts that access token.
+  `mcp-server.js` accepts that access token.
 
 ## Tools
 
@@ -66,7 +66,7 @@ npm run dev          # or: node dev.js  /  npm run start:all
 
 ```bash
 node auth-server.js  # authorization server (port 8788)
-node server.js       # MCP resource (port 8799)
+node mcp-server.js   # MCP resource (port 8799)
 ```
 
 Endpoints:
@@ -121,7 +121,7 @@ real XYZ-Clothiers server (`https://store.auth101.dev`):
 
 The real server delegates auth to a separate Auth0 tenant
 (`https://auth0.store.auth101.dev`). The mock defaults `authorization_servers` to
-the mock auth server (`http://127.0.0.1:8788`). `server.js` also answers
+the mock auth server (`http://127.0.0.1:8788`). `mcp-server.js` also answers
 `.well-known/oauth-authorization-server` (RFC 8414) for convenience, but since it
 doesn't mint tokens itself, that metadata simply mirrors the real auth server's
 endpoints (`AUTH_SERVER`) rather than advertising routes on its own origin. Set
@@ -133,7 +133,7 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
 
 ## Environment variables
 
-### MCP server (`server.js`)
+### MCP server (`mcp-server.js`)
 
 - `REQUIRE_AUTH=0` — run fully open (no 401, protected tools succeed). Useful for
   quick local testing without the auth server.
@@ -145,6 +145,20 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
   expected token `iss`. Default: `http://127.0.0.1:8788`.
 - `RESOURCE_NAME=<name>` — `resource_name` in resource metadata.
 - `PORT`, `HOST`, `PUBLIC_BASE_URL` — network overrides.
+
+Payment settlement (used by `checkout` / `pay`):
+
+- `SETTLEMENT_SCALE=<n>` — multiplier applied to the amount sent to the issuer's
+  `create-pay-token`. The catalog and order summaries always show **real dollar**
+  prices; the minted pay token uses `price × SETTLEMENT_SCALE`. Default `0.00001`
+  keeps QA mints sub-cent (a ~$100 order mints ~$0.001) so they fit a small Skyfire
+  balance. Set `1` to settle the real dollar amount.
+- `TAX_RATE` (default `0.08`), `SHIPPING_FLAT` (default `5`), `SETTLEMENT_CURRENCY`
+  (default `USD`) — cart math for the quote/settlement.
+- `SELLER_SERVICE_ID` / `SELLER_SEARCH_HINT` — the Skyfire seller the pay token is
+  minted for. Defaults to the merchant-mcp demo seller.
+- `ACCEPTED_ISSUERS=<csv>` — issuer origins allowed to settle COIN payments.
+  Default: `https://mcp-qa.skyfire.xyz`.
 
 ### Auth server (`auth-server.js`)
 
