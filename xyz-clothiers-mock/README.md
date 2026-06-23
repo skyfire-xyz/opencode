@@ -153,8 +153,22 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
 - `MOCK_MCP_RESOURCE_URI=<url>` — `aud` baked into issued access tokens. Must equal
   the MCP server's `/mcp` URL. Default: `http://127.0.0.1:8799/mcp`.
 - `MOCK_SKYFIRE_JWKS_URL` / `MOCK_SKYFIRE_ISSUER` — Skyfire JWKS + issuer used to
-  verify KYA tokens. Default: Skyfire QA.
+  verify KYA tokens. Default: Skyfire QA (`https://app-qa.skyfire.xyz`).
+- `MOCK_SKYFIRE_ENV` — expected `env` claim. Default: `qa`. Also selects the issuer
+  from the built-in `production`/`sandbox`/`qa` map when `MOCK_SKYFIRE_ISSUER` is unset.
+- `MOCK_SKYFIRE_ALG` — JWS algorithm the assertion must be signed with. Default:
+  `ES256` (what Skyfire uses, per the official `verifyToken` example).
+- `MOCK_SKYFIRE_EXPECTED_TYP` — required JWT header `typ`. Default: `kya+jwt`. Set to
+  an empty string to skip the `typ` check.
+- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default:
+  `auth101.dev`. Set to an empty string to skip the `sdm` check.
 - `AUTH_PORT`, `HOST`, `AUTH_PUBLIC_BASE_URL` — network overrides.
+
+KYA assertion validation follows Skyfire's official
+[`verifyKyaTokenToExternalSeller`](https://github.com/skyfire-xyz/kyapay/blob/main/code-examples/verifyToken/typescript/src/verifyKyaTokenToExternalSeller.ts)
+example: signature (pinned `ES256`) + issuer, header `typ`, the common claims
+(`env`, `iat`, `jti` as a UUID, `exp`), the seller domain (`sdm`), and the KYA
+identity (`hid.email`).
 
 ## Logging
 

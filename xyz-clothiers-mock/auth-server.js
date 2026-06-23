@@ -38,11 +38,38 @@ const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET ?? "mock-access-dev-se
 // The audience baked into issued access tokens; must match what /mcp expects.
 const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? "http://127.0.0.1:8799/mcp"
 
-// Skyfire JWKS + issuer for verifying the real KYA assertion (same defaults as
-// merchant.js — Skyfire QA).
-const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://app-qa.skyfire.xyz/.well-known/jwks.json"
-const skyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? "https://app-qa.skyfire.xyz"
+// KYA assertion validation, modeled on Skyfire's official verifyToken example:
+// https://github.com/skyfire-xyz/kyapay/blob/main/code-examples/verifyToken/typescript/src/verifyKyaTokenToExternalSeller.ts
+// We verify the signature against Skyfire's JWKS (pinned to ES256), the issuer,
+// the header `typ`, the common claims (env, iat, jti, exp), the seller domain
+// (sdm), and the KYA identity (hid.email).
+const SKYFIRE_ISSUER_BY_ENV = {
+  production: "https://app.skyfire.xyz",
+  sandbox: "https://app-sandbox.skyfire.xyz",
+  qa: "https://app-qa.skyfire.xyz",
+}
+// Default to the Skyfire QA environment (what this mock has always targeted).
+const expectedEnv = process.env.MOCK_SKYFIRE_ENV ?? "qa"
+const skyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? SKYFIRE_ISSUER_BY_ENV[expectedEnv] ?? SKYFIRE_ISSUER_BY_ENV.qa
+const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? `${skyfireIssuer}/.well-known/jwks.json`
+// Skyfire signs KYA tokens with ES256 (per the verifyToken example). Override via
+// MOCK_SKYFIRE_ALG if needed.
+const skyfireAlg = process.env.MOCK_SKYFIRE_ALG ?? "ES256"
+// Seller-specific expectations. `sdm` defaults to the demo seller (auth101.dev),
+// `typ` to the KYA token type. Set either to an empty string to skip that check.
+const expectedTyp = process.env.MOCK_SKYFIRE_EXPECTED_TYP ?? "kya+jwt"
+const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "auth101.dev"
 const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
+
+// Claim-shape helpers ported from the Skyfire verifyToken example (the example
+// uses the `validator` package; we inline equivalent checks to stay dependency-free).
+function isEpochSeconds(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1_000_000_000 && value <= 9_999_999_999
+}
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const isUuid = (value) => typeof value === "string" && UUID_RE.test(value)
+const isEmail = (value) => typeof value === "string" && EMAIL_RE.test(value)
 
 // In-memory token store (debug/introspection) and assertion replay cache.
 const issuedTokens = new Map()
@@ -139,23 +166,75 @@ const CORS = {
 // KYA assertion handling (real Skyfire tokens, verified via JWKS)
 // ---------------------------------------------------------------------------
 
-// Verify a real Skyfire KYA assertion: signature against Skyfire's JWKS + issuer.
-// Skyfire QA KYA assertions use a non-URL audience (a UUID-like client id), so we
-// validate signature + iss + exp and let the claim-shape check handle the rest —
-// identical to merchant.js.
+// Verify a real Skyfire KYA assertion, following the steps in Skyfire's official
+// verifyToken example (verifyKyaTokenToExternalSeller.ts):
+//   1. jwtVerify — signature against Skyfire's JWKS, pinned algorithm + issuer
+//      (jose also enforces exp/nbf internally).
+//   2. header `typ` matches the expected KYA token type.
+//   3. common payload claims: env, iat (epoch seconds, past), jti (UUID),
+//      exp (epoch seconds, future).
+//   4. sdm matches the expected seller domain.
+//   5. KYA identity: hid.email is a valid email.
+// Throws on any failure; the caller maps that to an invalid_grant 401. The `typ`
+// and `sdm` checks are skipped when their expected values are empty.
 async function verifyKyaAssertion(assertion) {
-  log("verifyKyaAssertion", "verifying Skyfire KYA assertion against JWKS", {
+  log("verifyKyaAssertion", "verifying Skyfire KYA assertion (per Skyfire verifyToken example)", {
     assertion: preview(assertion),
     jwks: skyfireJwksUrl,
     expectedIssuer: skyfireIssuer,
+    algorithm: skyfireAlg,
+    expectedEnv,
+    expectedTyp: expectedTyp || "(skipped)",
+    expectedSdm: expectedSdm || "(skipped)",
   })
-  const { payload } = await jwtVerify(assertion, skyfireJwks, { issuer: skyfireIssuer })
-  log("verifyKyaAssertion", "assertion verified", {
+
+  // 1. Signature + algorithm + issuer.
+  const { payload, protectedHeader: header } = await jwtVerify(assertion, skyfireJwks, {
+    algorithms: [skyfireAlg],
+    issuer: skyfireIssuer,
+  })
+
+  // 2. Header typ (e.g. "kya+jwt").
+  if (expectedTyp && header.typ !== expectedTyp) {
+    throw new Error(`invalid typ: expected "${expectedTyp}", got "${header.typ}"`)
+  }
+
+  // 3. Common payload claims.
+  if (payload.env !== expectedEnv) {
+    throw new Error(`invalid env: expected "${expectedEnv}", got "${payload.env}"`)
+  }
+  const now = Math.floor(Date.now() / 1000)
+  if (!isEpochSeconds(payload.iat) || payload.iat > now) {
+    throw new Error("invalid iat: must be a 10-digit epoch-seconds value in the past")
+  }
+  if (!isUuid(payload.jti)) {
+    throw new Error("invalid jti: must be a valid UUID")
+  }
+  if (!isEpochSeconds(payload.exp) || payload.exp < now) {
+    throw new Error("invalid exp: must be a 10-digit epoch-seconds value in the future")
+  }
+
+  // 4. sdm matches the expected seller domain.
+  if (expectedSdm && payload.sdm !== expectedSdm) {
+    throw new Error(`invalid sdm: expected "${expectedSdm}", got "${payload.sdm}"`)
+  }
+
+  // 5. KYA identity claims.
+  const email = payload?.hid?.email
+  if (!isEmail(email)) {
+    throw new Error("invalid email: hid.email must be a valid email address")
+  }
+
+  log("verifyKyaAssertion", "assertion verified (signature + header + claims OK)", {
     iss: payload.iss,
     aud: payload.aud,
     sub: typeof payload.sub === "string" ? payload.sub : undefined,
     jti: typeof payload.jti === "string" ? payload.jti : undefined,
     exp: typeof payload.exp === "number" ? payload.exp : undefined,
+    env: payload.env,
+    sdm: payload.sdm,
+    typ: header.typ,
+    email,
     hasAid: !!payload.aid,
     hasHid: !!payload.hid,
   })
@@ -285,6 +364,10 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: "invalid_request", error_description: "missing assertion" }, CORS)
     }
 
+    // The KYA token is minted upstream by Skyfire (create-kya-token); here it
+    // arrives as the exchange `assertion`. Log the full value for debugging.
+    log("handleTokenExchange", "──── KYA token received (full) ────", { kyaToken: assertion })
+
     let payload
     try {
       payload = await verifyKyaAssertion(assertion)
@@ -326,6 +409,13 @@ const server = http.createServer(async (req, res) => {
     )
 
     issuedTokens.set(access, { active: true, scope, sub: user, exp: now + expiresIn, iat: now })
+    log("handleTokenExchange", "──── access token CREATED (full) ────", {
+      accessToken: access,
+      sub: user,
+      scope,
+      iat: now,
+      exp: now + expiresIn,
+    })
     log("handleTokenExchange", "════════ KYA → ACCESS TOKEN EXCHANGE END (access token issued) ════════", {
       user,
       scope,
@@ -363,4 +453,6 @@ server.listen(port, host, () => {
   log("listen", `token exchange: ${authOrigin}/oauth/token (jwt-bearer: Skyfire kya_token -> access_token)`)
   log("listen", `resource aud:   ${resourceAud}`)
   log("listen", `skyfire JWKS:   ${skyfireJwksUrl}`)
+  log("listen", `kya validation: alg=${skyfireAlg} iss=${skyfireIssuer} env=${expectedEnv}`)
+  log("listen", `                typ=${expectedTyp || "(skipped)"} sdm=${expectedSdm || "(skipped)"}`)
 })
