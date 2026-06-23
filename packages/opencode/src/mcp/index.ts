@@ -44,6 +44,10 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 const log = Log.create({ service: "mcp" })
 const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
 const DEFAULT_TIMEOUT = 30_000
+// How long a gated tool call waits inline for the user to approve a Skyfire KYA
+// sign-in (and a fresh token to be stored) before giving up and returning a prompt.
+const KYA_CONSENT_WAIT_MS = 120_000
+const KYA_CONSENT_POLL_MS = 1_500
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
@@ -496,12 +500,12 @@ function isUnauthorizedError(error: unknown): boolean {
   return false
 }
 
-// Hook invoked when a tool call 401s. It decides whether this is a KYA-gated
-// server (→ gate: surface a sign-in prompt) or unrelated (→ passthrough: rethrow).
+// Hook invoked when a tool call 401s. It decides the outcome:
+//   - retry: a Skyfire sign-in was approved and a fresh token stored → retry inline
+//   - gate: sign-in needed but not approved (timed out) → return a prompt result
+//   - passthrough: unrelated 401 (not a KYA server) → rethrow unchanged
 type KyaToolHook = {
-  onUnauthorized: () => Promise<
-    { action: "gate"; text: string } | { action: "passthrough" } | { action: "retry" }
-  >
+  onUnauthorized: () => Promise<{ action: "retry" } | { action: "gate"; text: string } | { action: "passthrough" }>
 }
 
 // Convert MCP tool definition to AI SDK Tool type
@@ -547,25 +551,29 @@ function convertMcpTool(
         log.info("[convertMcpTool] tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
         return result
       } catch (error) {
-        const unauthorized = isUnauthorizedError(error)
-        log.info("[convertMcpTool] tool call error", {
-          tool: mcpTool.name,
-          unauthorized,
-          hasKyaHook: !!kya,
-          error: error instanceof Error ? error.message : String(error),
-        })
-        // A 401 from a KYA-advertising server is recoverable: mint a KYA token
-        // (the Skyfire issuer's create-kya-token) and retry. Anything else rethrows.
-        if (!kya || !unauthorized) throw error
+        // A 401 from a KYA-advertising server is recoverable: the hook prompts the
+        // user to sign in and waits; when approved (a fresh token is stored) we retry
+        // this same call inline so it completes in one go. Everything else rethrows.
+        if (!kya || !isUnauthorizedError(error)) throw error
         const outcome = await kya.onUnauthorized()
-        log.info("[convertMcpTool] KYA onUnauthorized outcome", { tool: mcpTool.name, action: outcome.action })
         if (outcome.action === "retry") {
-          const retried = await run()
-          log.info("[convertMcpTool] tool call RETRY RESPONSE", {
-            tool: mcpTool.name,
-            isError: !!(retried as any)?.isError,
-          })
-          return retried
+          try {
+            return await run()
+          } catch (retryError) {
+            // Sign-in happened but the token still didn't unlock the tool (e.g. the
+            // issuer's assertion was rejected). Surface a clear result, don't loop.
+            if (isUnauthorizedError(retryError))
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: "The Skyfire sign-in completed but the tool is still unauthorized (the token was rejected). Please check the server's Skyfire configuration.",
+                  },
+                ],
+                isError: true,
+              }
+            throw retryError
+          }
         }
         if (outcome.action === "gate")
           return { content: [{ type: "text" as const, text: outcome.text }], isError: true }
@@ -1219,28 +1227,26 @@ export const layer = Layer.effect(
                       () => ({ supportsKya: false }) as Awaited<ReturnType<typeof detectKyaSupport>>,
                     )
                     if (!support.supportsKya) return { action: "passthrough" as const }
-                    // Silently mint a KYA token: this calls the Skyfire issuer's
-                    // create-kya-token, exchanges the assertion for an access token,
-                    // and stores it. The live transport reads the stored token on the
-                    // retried call, so the gated tool succeeds without a browser flow.
-                    log.info("[tools] tool-call 401 → attempting silent KYA mint", { name: clientName })
-                    const minted = await bridge.promise(mintKya(clientName, remoteUrl))
-                    if (minted.minted) {
-                      log.info("[tools] silent KYA mint succeeded → retrying tool call", { name: clientName })
-                      return { action: "retry" as const }
-                    }
-                    // Mint failed (issuer not enabled/configured, or mint/exchange
-                    // error). Fall back to the sign-in prompt and surface the reason.
-                    log.warn("[tools] silent KYA mint failed → gating tool call", {
-                      name: clientName,
-                      error: minted.error,
-                    })
+                    const origin = new URL(remoteUrl).origin
+                    // Snapshot the current (rejected/absent) token so we can detect a
+                    // *fresh* mint, not a stale one already on disk.
+                    const before = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
+                    // Prompt for sign-in via the global bus (the UI auto-opens the
+                    // consent dialog). McpAuth is a global file, so kyaAuthorize's mint
+                    // from the UI's request is visible to this poll across instances.
                     await bridge.promise(bus.publish(KyaConsentRequired, { name: clientName }).pipe(Effect.ignore))
+                    // Wait (in this same tool call) for the user to approve and a fresh
+                    // token to land, so we can retry inline — no second prompt needed.
+                    const deadline = Date.now() + KYA_CONSENT_WAIT_MS
+                    while (Date.now() < deadline) {
+                      await new Promise((resolve) => setTimeout(resolve, KYA_CONSENT_POLL_MS))
+                      const token = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
+                      if (token && token !== before) return { action: "retry" as const }
+                    }
+                    log.info("[kya] consent not approved within wait window", { name: clientName })
                     return {
                       action: "gate" as const,
-                      text: minted.error
-                        ? `Skyfire KYA sign-in needed for "${clientName}": ${minted.error}`
-                        : `This tool requires a Skyfire KYA sign-in for "${clientName}". Approve the Skyfire sign-in prompt, then ask me to retry.`,
+                      text: `Skyfire KYA sign-in for "${clientName}" wasn't approved in time. Approve the Skyfire sign-in prompt, then ask me to retry.`,
                     }
                   },
                 }
