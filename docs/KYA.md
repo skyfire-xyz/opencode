@@ -34,12 +34,12 @@ through an MCP tool call on the issuer.
 
 When you connect a protected MCP server, the agent does (simplified):
 
-1. **Unauthenticated probe (spec B1–B2)**
+1. **Unauthenticated probe**
    - `POST <server>/mcp` with no `Authorization` header.
    - The server responds `401` with a `WWW-Authenticate` challenge that may carry a
      `resource_metadata="…"` pointer (RFC 9728).
 
-2. **Authorization server discovery (B3–B5)**
+2. **Authorization server discovery**
    - The agent follows the `resource_metadata` pointer when present, otherwise falls
      back to the default RFC 9728 location
      (`<server>/.well-known/oauth-protected-resource`).

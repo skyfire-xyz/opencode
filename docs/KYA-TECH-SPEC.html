@@ -98,13 +98,9 @@ That sibling feature is documented in §12.</p>
 <li><strong>RFC 7636</strong> — PKCE (interactive fallback).</li>
 <li><strong>KYA / ID-JAG grant profile drafts</strong> — advertised via <code>authorization_grant_profiles_supported</code> in AS metadata; profile URN <code>urn:ietf:params:oauth:grant-profile:kya</code>.</li>
 </ul>
-<p>Phase labels <strong>B / C / D</strong> used throughout:</p>
-<ul>
-<li><strong>Phase B</strong> — discovery (find the Resource AS and read its grant profiles).</li>
-<li><strong>Phase C</strong> — mint the KYA assertion at the issuer.</li>
-<li><strong>Phase D</strong> — exchange the assertion for an access token and use it.</li>
-</ul>
-<p>(Phase A is the user's act of configuring the servers; it is out of band.)</p>
+<p>The flow has three steps: <strong>discovery</strong> (find the Resource AS and read its grant
+profiles), <strong>mint</strong> (create the KYA assertion at the issuer), and <strong>exchange</strong> (swap
+the assertion for an access token and use it).</p>
 <hr>
 <h2>3. Architecture Overview</h2>
 <p>Three network parties cooperate, with the agent orchestrating:</p>
@@ -117,12 +113,12 @@ That sibling feature is documented in §12.</p>
 <pre><code>   user action ─▶ connect(server)
                        │
                        ▼ (401 / Unauthorized)
-                 silent KYA flow ──── Phase B: discovery ─────┐
+                 silent KYA flow ──── discovery ───────────────┐
                        │                                      ▼
                        │                             Resource AS metadata
-                       ▼ Phase C                                 
+                       ▼ mint                                     
                  KYA Issuer ── create-kya-token ─▶ KYA JWT assertion
-                       ▼ Phase D                                 
+                       ▼ exchange                                 
                  Resource AS /token (jwt-bearer) ─▶ access_token
                        ▼
                  persist token (keyed by resource origin)
@@ -300,24 +296,24 @@ a failure should hard-fail or fall through to interactive OAuth.</p>
 </ul>
 <p>Servers that fail any guard skip KYA entirely and follow the ordinary connect/auth
 path.</p>
-<h3>7.2 Phase B — Discovery &amp; advertisement gate</h3>
+<h3>7.2 Discovery &amp; advertisement gate</h3>
 <p>Discovery is shared by both the consent gate (§6.3) and the mint preflight. It
 yields <code>{ supportsKya, authServer, sellerServiceId }</code>:</p>
 <ol>
-<li><strong>B1–B2 probe.</strong> <code>POST &lt;serverUrl&gt;</code> with a minimal JSON-RPC <code>initialize</code> body and no <code>Authorization</code>. If the response is <code>401</code>, read the <code>resource_metadata="…"</code> pointer from the <code>WWW-Authenticate</code> header (RFC 9728). If there's no 401 or no pointer, fall back to the default well-known location: <code>&lt;origin&gt;/.well-known/oauth-protected-resource</code>.</li>
+<li><strong>Probe.</strong> <code>POST &lt;serverUrl&gt;</code> with a minimal JSON-RPC <code>initialize</code> body and no <code>Authorization</code>. If the response is <code>401</code>, read the <code>resource_metadata="…"</code> pointer from the <code>WWW-Authenticate</code> header (RFC 9728). If there's no 401 or no pointer, fall back to the default well-known location: <code>&lt;origin&gt;/.well-known/oauth-protected-resource</code>.</li>
 </ol>
 <ol>
-<li><strong>B3–B4 protected-resource metadata.</strong> <code>GET</code> the resource-metadata URL. The response is expected to contain: - <code>authorization_servers: string[]</code> → the Resource AS origin (<code>[0]</code>). - optionally <code>seller_service_id</code> → a seller identity the resource advertises for itself. If there's no auth server, <code>supportsKya: false</code> and the flow short-circuits.</li>
+<li><strong>Protected-resource metadata.</strong> <code>GET</code> the resource-metadata URL. The response is expected to contain: - <code>authorization_servers: string[]</code> → the Resource AS origin (<code>[0]</code>). - optionally <code>seller_service_id</code> → a seller identity the resource advertises for itself. If there's no auth server, <code>supportsKya: false</code> and the flow short-circuits.</li>
 </ol>
 <ol>
-<li><strong>B5–B6 AS metadata.</strong> <code>GET &lt;authServer&gt;/.well-known/oauth-authorization-server</code> (RFC 8414), falling back to <code>/.well-known/openid-configuration</code>. Read <code>authorization_grant_profiles_supported</code> and check whether it advertises the KYA profile (normalizing both the full URN <code>urn:ietf:params:oauth:grant-profile:kya</code> and the short token <code>kya</code>).</li>
+<li><strong>AS metadata.</strong> <code>GET &lt;authServer&gt;/.well-known/oauth-authorization-server</code> (RFC 8414), falling back to <code>/.well-known/openid-configuration</code>. Read <code>authorization_grant_profiles_supported</code> and check whether it advertises the KYA profile (normalizing both the full URN <code>urn:ietf:params:oauth:grant-profile:kya</code> and the short token <code>kya</code>).</li>
 </ol>
 <p><strong>The advertisement gate:</strong> if the profiles do not include <code>kya</code>, <code>supportsKya</code> is
 false and the flow returns <code>{ minted: false, kyaAdvertised: false }</code> — KYA is
 skipped and the caller may fall back to interactive OAuth. Once past this gate, any
 <em>subsequent</em> thrown failure is reported as <code>kyaAdvertised: true</code> (see §7.6).</p>
 <blockquote>
-<p>All of Phase B is wrapped so a discovery/network failure degrades to "KYA not advertised," not a hard error.</p>
+<p>All of discovery is wrapped so a discovery/network failure degrades to "KYA not advertised," not a hard error.</p>
 </blockquote>
 <h3>7.3 Seller selector resolution</h3>
 <p>The issuer tool requires <strong>exactly one</strong> seller selector. Priority:</p>
@@ -326,14 +322,14 @@ skipped and the caller may fall back to interactive OAuth. Once past this gate, 
 <li><strong><code>seller_service_id</code></strong> advertised by the protected-resource metadata → <code>{ sellerServiceId }</code>.</li>
 <li><strong>Derived from the target MCP URL</strong> → <code>{ sellerDomainOrUrl }</code>: the target's hostname, except <strong>loopback / RFC 1918 private ranges</strong> are substituted with a placeholder domain registered in the issuer's seller directory (because the directory can't resolve localhost). The recognized "local" set: <code>localhost</code>, <code>127.0.0.1</code>, <code>::1</code>, <code>0.0.0.0</code>, <code>*.localhost</code>, <code>127.*</code>, <code>10.*</code>, <code>192.168.*</code>, <code>172.16–31.*</code>.</li>
 </ol>
-<h3>7.4 Phase C — Mint the KYA assertion</h3>
+<h3>7.4 Mint the KYA assertion</h3>
 <ol>
 <li>If no issuer is configured → return <code>{ minted: false, kyaAdvertised: true, error: "KYA supported but no issuer configured…" }</code>.</li>
 <li>Connect to the issuer via a StreamableHTTP transport carrying the issuer's <code>headers</code> (the API key).</li>
 <li><code>callTool({ name: issuer.tool, arguments: sellerSelector })</code>, closing the issuer client afterward.</li>
 <li>Concatenate the text content of the result and extract the JWT — a three-segment <code>xxx.yyy.zzz</code> token. (The issuer tool may return a human-readable string such as <code>"Creation of KYA token for &lt;id&gt; is complete: &lt;jwt&gt;"</code>.) No JWT → error result.</li>
 </ol>
-<h3>7.5 Phase D — Exchange &amp; store</h3>
+<h3>7.5 Exchange &amp; store</h3>
 <ol>
 <li><strong>Read the AS <code>token_endpoint</code></strong> from the AS metadata. Missing → error result.</li>
 <li><code>POST &lt;token_endpoint&gt;</code> with <code>content-type: application/x-www-form-urlencoded</code> and body:</li>
@@ -366,7 +362,7 @@ skipped and the caller may fall back to interactive OAuth. Once past this gate, 
 <li>Otherwise → <code>{ minted: false, kyaAdvertised: false }</code>.</li>
 </ul>
 <h3>7.7 Lifetime of a KYA-minted token (no local expiry, no refresh)</h3>
-<p>Because Phase D stores no <code>expiresAt</code> and no <code>refreshToken</code>:</p>
+<p>Because the exchange stores no <code>expiresAt</code> and no <code>refreshToken</code>:</p>
 <ul>
 <li>The token reads as <strong>authenticated indefinitely</strong> in status checks — even after the AS-issued <code>expires_in</code> has actually elapsed.</li>
 <li>The agent therefore does <strong>not</strong> proactively re-mint on a timer. A stale token is replaced only when the <strong>MCP server rejects it with a 401</strong>, which re-enters the connect flow and runs the silent KYA flow again (a fresh mint).</li>
@@ -609,27 +605,27 @@ end-to-end testing:</p>
         A-&gt;&gt;M: connect with configured headers (API key)
         Note over A,M: KYA branch skipped — issuer authenticates itself
     else normal remote server
-        Note over A,AS: Phase B — discovery
-        A-&gt;&gt;M: POST /mcp (no Authorization) [B1]
-        M--&gt;&gt;A: 401 WWW-Authenticate, resource_metadata=… [B2]
-        A-&gt;&gt;M: GET /.well-known/oauth-protected-resource [B3]
-        M--&gt;&gt;A: { authorization_servers:[AS], seller_service_id? } [B4]
-        A-&gt;&gt;AS: GET /.well-known/oauth-authorization-server [B5]
-        AS--&gt;&gt;A: { token_endpoint, authorization_grant_profiles_supported } [B6]
+        Note over A,AS: Discovery
+        A-&gt;&gt;M: POST /mcp (no Authorization)
+        M--&gt;&gt;A: 401 WWW-Authenticate, resource_metadata=…
+        A-&gt;&gt;M: GET /.well-known/oauth-protected-resource
+        M--&gt;&gt;A: { authorization_servers:[AS], seller_service_id? }
+        A-&gt;&gt;AS: GET /.well-known/oauth-authorization-server
+        AS--&gt;&gt;A: { token_endpoint, authorization_grant_profiles_supported }
 
         alt KYA advertised
             Note over A: first pass → status = needs_kya_consent
             Note over A: user approves KYA sign-in&lt;br/&gt;→ reconnect with consent
             alt issuer configured AND enabled
-                Note over A,I: Phase C — mint KYA assertion
-                A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector) [C1]
-                I--&gt;&gt;A: KYA JWT assertion [C2]
-                Note over A,AS: Phase D — exchange + use
-                A-&gt;&gt;AS: POST /token grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt; [D1]
+                Note over A,I: Mint KYA assertion
+                A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector)
+                I--&gt;&gt;A: KYA JWT assertion
+                Note over A,AS: Exchange + use
+                A-&gt;&gt;AS: POST /token grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt;
                 AS-&gt;&gt;I: fetch JWKS, verify assertion signature
-                AS--&gt;&gt;A: { access_token (aud = MCP) } [D2]
-                A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt; [D3]
-                M--&gt;&gt;A: 200 OK + tools — connected [D4]
+                AS--&gt;&gt;A: { access_token (aud = MCP) }
+                A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt;
+                M--&gt;&gt;A: 200 OK + tools — connected
             else issuer missing or not enabled
                 alt interactive fallback enabled
                     Note over A: fall through to interactive (below)
@@ -663,7 +659,7 @@ end-to-end testing:</p>
 <td><code>failed</code> immediately</td>
 </tr>
 <tr>
-<td>Discovery/network error in Phase B</td>
+<td>Discovery/network error</td>
 <td>Treated as "KYA not advertised" → fallback eligible</td>
 </tr>
 <tr>
