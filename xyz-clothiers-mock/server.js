@@ -410,7 +410,7 @@ function text(res, status, body, headers) {
 
 function bearer(req) {
   const auth = req.headers.authorization
-  log("bearer", "extracting Bearer token from Authorization header", { auth: preview(auth) })
+  log("bearer", "extracting Bearer token from Authorization header", { auth })
   if (!auth?.startsWith("Bearer ")) {
     log("bearer", "no Bearer authorization header present")
     return undefined

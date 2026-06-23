@@ -55,10 +55,13 @@ const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? `${skyfireIssuer}/.w
 // Skyfire signs KYA tokens with ES256 (per the verifyToken example). Override via
 // MOCK_SKYFIRE_ALG if needed.
 const skyfireAlg = process.env.MOCK_SKYFIRE_ALG ?? "ES256"
-// Seller-specific expectations. `sdm` defaults to the demo seller (auth101.dev),
-// `typ` to the KYA token type. Set either to an empty string to skip that check.
+// Seller-specific expectations. `typ` defaults to the KYA token type. `sdm`
+// (the seller domain) is determined by the client/Skyfire at mint time — not by
+// this mock — and varies per target (e.g. "auth101.dev", "mcp-server.com"), so it
+// defaults to skipped. Set MOCK_SKYFIRE_EXPECTED_SDM to enforce a specific seller;
+// set either to an empty string to skip that check.
 const expectedTyp = process.env.MOCK_SKYFIRE_EXPECTED_TYP ?? "kya+jwt"
-const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "mcp-server"
+const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "mcp-server.com"
 const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
 
 // Claim-shape helpers ported from the Skyfire verifyToken example (the example

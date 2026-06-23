@@ -160,8 +160,10 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
   `ES256` (what Skyfire uses, per the official `verifyToken` example).
 - `MOCK_SKYFIRE_EXPECTED_TYP` — required JWT header `typ`. Default: `kya+jwt`. Set to
   an empty string to skip the `typ` check.
-- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default:
-  `auth101.dev`. Set to an empty string to skip the `sdm` check.
+- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default: unset
+  (the `sdm` check is **skipped**), because the seller domain is chosen by the
+  client/Skyfire at mint time and varies per target (e.g. `auth101.dev`,
+  `mcp-server.com`). Set it to enforce a specific seller.
 - `AUTH_PORT`, `HOST`, `AUTH_PUBLIC_BASE_URL` — network overrides.
 
 KYA assertion validation follows Skyfire's official
