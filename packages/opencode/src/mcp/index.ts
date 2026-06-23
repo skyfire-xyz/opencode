@@ -545,10 +545,10 @@ function convertMcpTool(
               CallToolResultSchema,
               { resetTimeoutOnProgress: true, timeout },
             )
-      log.info("[convertMcpTool] tool call REQUEST", { tool: mcpTool.name, args })
+      log.info("tool call REQUEST", { tool: mcpTool.name, args })
       try {
         const result = await run()
-        log.info("[convertMcpTool] tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
+        log.info("tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
         return result
       } catch (error) {
         // A 401 from a KYA-advertising server is recoverable: the hook prompts the
