@@ -1110,7 +1110,7 @@ export const layer = Layer.effect(
       // (token issuers). The gateway reaches them directly via s.clients, so
       // their tools must NOT be exposed to the agent — otherwise the LLM could
       // call create-pay-token / find-sellers itself and bypass the gateway.
-      const providerServers = new Set(Object.values(capabilityMap).map((e) => e.server))
+      const providerServers = new Set(Object.values(capabilityMap).flatMap((entries) => entries.map((e) => e.server)))
 
       const connectedClients = Object.entries(s.clients).filter(
         ([clientName]) => s.status[clientName]?.status === "connected" && !providerServers.has(clientName),

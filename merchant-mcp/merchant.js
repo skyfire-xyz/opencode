@@ -81,6 +81,11 @@ const formatProductForDisplay = (product) => ({
   price: formatPrice(product.price),
 })
 const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:coin"]
+// Issuer identities (MCP server URL origins) the merchant will settle COIN
+// payments with. The gateway derives a provider's issuer from its configured
+// server url origin and must find a match here before minting a COIN token —
+// this is what makes COIN settlement closed-loop.
+const ACCEPTED_ISSUERS = ["https://mcp-qa.skyfire.xyz"]
 
 const CATALOG = [
   {
@@ -274,8 +279,16 @@ const TOOLS = [
 ]
 
 function paymentSignal(total, subTotal, taxes) {
+  // Per-type accepted-issuer map. Only COIN-suffixed types get an issuer
+  // constraint; card types are intentionally omitted so the gateway puts no
+  // issuer constraint on them ("for CARD it doesn't matter").
+  const issuersByType = {}
+  for (const type of ACCEPTED_SETTLEMENT_TYPES) {
+    if (type.endsWith(":coin")) issuersByType[type] = ACCEPTED_ISSUERS
+  }
   return {
     "payments/settlement/types": ACCEPTED_SETTLEMENT_TYPES,
+    "payments/settlement/issuers": issuersByType,
     "payments/settlement/currency": "USD",
     "payments/amount/total": total,
     "payments/amount/sub-total": subTotal,
