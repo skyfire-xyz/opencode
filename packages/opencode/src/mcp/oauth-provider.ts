@@ -58,11 +58,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
     }
   }
 
-  // Memoized: whether the target server advertises the KYA grant profile. Used to
-  // decide whether to suppress interactive OAuth (KYA servers) or let it proceed
-  // (ordinary OAuth servers). Cached so the SDK's repeated provider calls during a
-  // single auth attempt don't re-run discovery.
   private kyaAdvertised?: Promise<boolean>
+
+  private isKyaServer(): Promise<boolean> {
+    return (this.kyaAdvertised ??= serverAdvertisesKya(this.serverUrl))
+  }
 
   /**
    * Whether the SDK's interactive OAuth path (Dynamic Client Registration +
@@ -71,9 +71,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
    * the KYA grant profile — in which case KYA, not interactive OAuth, is the auth path.
    */
   private async shouldSuppressInteractive(): Promise<boolean> {
-    if (this.allowInteractive) return false
-    this.kyaAdvertised ??= serverAdvertisesKya(this.serverUrl)
-    return this.kyaAdvertised
+    return !this.allowInteractive && (await this.isKyaServer())
   }
 
   /**
@@ -138,8 +136,6 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
-    await this.ensureDiscoveryViaWwwAuthenticate()
-
     // Check config first (pre-registered client)
     if (this.config.clientId) {
       return {
@@ -163,18 +159,17 @@ export class McpOAuthProvider implements OAuthClientProvider {
       log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
     }
 
-    // No usable client. Returning `undefined` makes the SDK perform Dynamic Client
-    // Registration (POST <AS>/register). For KYA servers on the auto-connect transport
-    // we must NOT do that — KYA is the auth path — so abort and let the 401 surface as
-    // an UnauthorizedError to our handlers (connect-time KYA / the tool-call hook).
-    // Non-KYA servers fall through to standard DCR.
-    if (await this.shouldSuppressInteractive()) {
-      log.warn("[clientInformation] KYA server: suppressing Dynamic Client Registration; routing 401 to KYA", {
-        mcpName: this.mcpName,
-      })
-      throw new UnauthorizedError("DCR suppressed for KYA server; KYA handles this 401")
+    if (await this.isKyaServer()) {
+      await this.ensureDiscoveryViaWwwAuthenticate()
+
+      if (!this.allowInteractive) {
+        log.warn("[clientInformation] KYA server: suppressing Dynamic Client Registration; routing 401 to KYA", {
+          mcpName: this.mcpName,
+        })
+        throw new UnauthorizedError("DCR suppressed for KYA server; KYA handles this 401")
+      }
     }
-    // Interactive flow: no client info or URL changed — trigger dynamic registration.
+
     return undefined
   }
 
