@@ -20,9 +20,6 @@
 the same capability machinery is reused to mint payment tokens
 (<code>org.kyapay:pay</code>). It describes the roles, data structures, and network
 exchanges involved, independent of any particular client implementation.</p>
-<blockquote>
-<p>This is the design reference. For a hands-on operations description (running a protected resource and authorization server, configuring the issuer, reading the logs), see <a href="KYA.md">KYA.md</a>. Where the two overlap, this doc is authoritative on behavior and KYA.md on operation.</p>
-</blockquote>
 <hr>
 <h2>1. Purpose &amp; Background</h2>
 <p>MCP (Model Context Protocol) remote servers are HTTP resources that may require
@@ -116,9 +113,9 @@ the assertion for an access token and use it).</p>
                  silent KYA flow ──── discovery ───────────────┐
                        │                                      ▼
                        │                             Resource AS metadata
-                       ▼ mint                                     
+                       ▼ mint
                  KYA Issuer ── create-kya-token ─▶ KYA JWT assertion
-                       ▼ exchange                                 
+                       ▼ exchange
                  Resource AS /token (jwt-bearer) ─▶ access_token
                        ▼
                  persist token (keyed by resource origin)
@@ -609,63 +606,44 @@ end-to-end testing:</p>
 </ul>
 <hr>
 <h2>16. End-to-End Sequence</h2>
-<pre><code class="language-mermaid">sequenceDiagram
-    autonumber
-    participant A as Agent
-    participant M as MCP server (resource)
-    participant AS as Resource AS (OAuth)
-    participant I as KYA Issuer (Skyfire)
-
-    Note over A: connect(name)
-
-    alt server advertises org.kyapay:kya (it IS the issuer)
-        A-&gt;&gt;M: connect with configured headers (API key)
-        Note over A,M: KYA branch skipped — issuer authenticates itself
-    else normal remote server
-        Note over A,AS: Discovery
-        A-&gt;&gt;M: POST /mcp (no Authorization)
-        M--&gt;&gt;A: 401 WWW-Authenticate, resource_metadata=…
-        A-&gt;&gt;M: GET /.well-known/oauth-protected-resource
-        M--&gt;&gt;A: { authorization_servers:[AS], seller_service_id? }
-        A-&gt;&gt;AS: GET /.well-known/oauth-authorization-server
-        AS--&gt;&gt;A: { token_endpoint, authorization_grant_profiles_supported }
-
-        alt KYA advertised
-            Note over A: first pass → status = needs_kya_consent
-            Note over A: user approves KYA sign-in&lt;br/&gt;→ reconnect with consent
-            alt issuer configured AND enabled
-                Note over A,I: Mint KYA assertion
-                A-&gt;&gt;I: connect + tools/call &lt;kya tool&gt; (seller selector)
-                I--&gt;&gt;A: KYA JWT assertion
-                Note over A,AS: Exchange + use
-                A-&gt;&gt;AS: POST /token grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt;
-                AS-&gt;&gt;I: fetch JWKS, verify assertion signature
-                AS--&gt;&gt;A: { access_token (aud = MCP) }
-                A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt;
-                M--&gt;&gt;A: 200 OK + tools — connected
-            else issuer missing or not enabled
-                alt interactive fallback enabled
-                    Note over A: fall through to interactive (below)
-                else default
-                    Note over A: status = failed (enable the issuer, or add one)
-                end
-            end
-        else KYA not advertised (or fallback enabled)
-            Note over A,AS: Interactive Authorization Code + PKCE
-            A-&gt;&gt;AS: GET /authorize?response_type=code&amp;code_challenge=… (browser)
-            AS--&gt;&gt;A: 302 → redirect_uri?code=… (loopback callback)
-            A-&gt;&gt;AS: POST /token grant_type=authorization_code &amp; code_verifier
-            AS--&gt;&gt;A: { access_token }
-            A-&gt;&gt;M: POST /mcp + Authorization: Bearer &lt;access_token&gt;
-            M--&gt;&gt;A: 200 OK + tools — connected
-        end
-    end
+<p>Actors: <strong>A</strong> = Agent, <strong>M</strong> = MCP server (resource), <strong>AS</strong> = Resource AS (OAuth),
+<strong>I</strong> = KYA Issuer.</p>
+<p><strong>Case 0 — the target IS the issuer</strong> (advertises <code>org.kyapay:kya</code>): A connects with
+its configured API-key header; the KYA branch is skipped (the issuer authenticates
+itself).</p>
+<p><strong>Case 1 — KYA path</strong> (normal remote server, KYA advertised, consent given, issuer
+enabled):</p>
+<pre><code>1.  A  → M    POST /mcp (no Authorization)
+2.  M  → A    401 WWW-Authenticate, resource_metadata=…
+3.  A  → M    GET /.well-known/oauth-protected-resource
+4.  M  → A    { authorization_servers:[AS], seller_service_id? }
+5.  A  → AS   GET /.well-known/oauth-authorization-server
+6.  AS → A    { token_endpoint, authorization_grant_profiles_supported }   (KYA advertised)
+    ── first pass stops at needs_kya_consent; user approves → reconnect with consent ──
+7.  A  → I    connect + tools/call &lt;kya tool&gt; (seller selector)
+8.  I  → A    KYA JWT assertion
+9.  A  → AS   POST /token  grant_type=jwt-bearer &amp; assertion=&lt;JWT&gt;
+10. AS → I    fetch JWKS, verify assertion signature
+11. AS → A    { access_token (aud = MCP) }
+12. A  → M    POST /mcp + Authorization: Bearer &lt;access_token&gt;
+13. M  → A    200 OK + tools — connected
 </code></pre>
-<p>The diagram shows the challenge arriving at connect. The <strong>tool-call-time</strong> variant
-(§6.5) is the same mint/exchange, just triggered later: the connect at the top
-succeeds with no token, the agent calls open tools normally, and the <code>401</code> (or
-<code>isError</code> sign-in result) arrives on the first <strong>protected <code>tools/call</code></strong> — at which
-point the mint runs and the agent retries that tool call with the Bearer token.</p>
+<p>If the issuer is missing or not enabled, step 7 never happens: the result is <code>failed</code>
+("enable the issuer, or add one") — unless the interactive-fallback toggle is set, in
+which case A falls through to Case 2.</p>
+<p><strong>Case 2 — interactive fallback</strong> (KYA not advertised, or fallback enabled):</p>
+<pre><code>A  → AS   GET /authorize?response_type=code&amp;code_challenge=…   (browser)
+AS → A    302 → redirect_uri?code=…                            (loopback callback)
+A  → AS   POST /token  grant_type=authorization_code &amp; code_verifier
+AS → A    { access_token }
+A  → M    POST /mcp + Authorization: Bearer &lt;access_token&gt;
+M  → A    200 OK + tools — connected
+</code></pre>
+<p>The steps above show the challenge arriving at connect. The <strong>tool-call-time</strong> variant
+(§6.5) is the same mint/exchange, just triggered later: the connect succeeds with no
+token, the agent calls open tools normally, and the <code>401</code> (or <code>isError</code> sign-in result)
+arrives on the first <strong>protected <code>tools/call</code></strong> — at which point the mint runs and the
+agent retries that tool call with the Bearer token.</p>
 <hr>
 <h2>17. Error Handling &amp; Edge Cases</h2>
 <table>
