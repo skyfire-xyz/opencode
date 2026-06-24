@@ -63,12 +63,14 @@ let clientSeq = 0
 // The merchant's identity on the payment network (Skyfire). The token issuer
 // requires this to mint a pay token. Replace with the real Skyfire
 // sellerServiceId (discoverable via Skyfire's find-sellers tool).
-const SELLER_SERVICE_ID = "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+const SELLER_SERVICE_ID = "042aa019-6e8f-4ede-92c2-de6b49292e8b"
 // Optional search hint the gateway can use to look the seller up via
 // find-sellers if SELLER_SERVICE_ID is not a valid network id.
 const SELLER_SEARCH_HINT = "Clothing and apparel merchant"
 const TAX_RATE = 0.08
 const SHIPPING_FLAT = 0.0002
+const SKYFIRE_API_BASE_URL = (process.env.SKYFIRE_API_BASE_URL ?? "https://api-qa.skyfire.xyz").replace(/\/$/, "")
+const SKYFIRE_SELLER_API_KEY = process.env.SKYFIRE_SELLER_API_KEY ?? "8987b55a-44f7-4f64-ab8e-1ff76663b03c"
 
 // Round to 6 decimal places so sub-cent prices don't collapse to $0.00.
 const r6 = (n) => Math.round(n * 1e6) / 1e6
@@ -299,9 +301,26 @@ function paymentSignal(total, subTotal, taxes) {
   }
 }
 
+async function chargeSkyfireToken(token, amount) {
+  const response = await fetch(`${SKYFIRE_API_BASE_URL}/api/v1/tokens/charge`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "skyfire-api-key": SKYFIRE_SELLER_API_KEY,
+    },
+    body: JSON.stringify({ token, chargeAmount: String(amount) }),
+  })
+  const body = await response.text()
+  if (response.ok) return { ok: true, body }
+  return {
+    ok: false,
+    error: body || `Skyfire charge failed with status ${response.status}`,
+  }
+}
+
 // Returns a JSON-RPC `result` object: { content, isError?, _meta? }.
 // `meta` is the request's params._meta (where the gateway injects the pay token).
-function callMerchantTool(name, args, meta) {
+async function callMerchantTool(name, args, meta) {
   if (name === "search-for-products") {
     const q = (args.query ?? "").toLowerCase()
     const results = q
@@ -415,6 +434,17 @@ function callMerchantTool(name, args, meta) {
     const subTotal = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
     const taxes = r6(subTotal * TAX_RATE)
     const total = r6(subTotal + taxes + SHIPPING_FLAT)
+    if (!ACCEPTED_SETTLEMENT_TYPES.includes(settlementType)) {
+      return {
+        content: [{ type: "text", text: `Unsupported settlement type: ${String(settlementType)}` }],
+        isError: true,
+      }
+    }
+
+    const charge = await chargeSkyfireToken(payToken, total)
+    if (!charge.ok) {
+      return { content: [{ type: "text", text: `Payment charge failed: ${charge.error}` }], isError: true }
+    }
 
     carts.delete(cartId)
     const orderId = `ORD-${++orderSeq}`
@@ -434,7 +464,7 @@ function callMerchantTool(name, args, meta) {
             `  Taxes: ${formatPrice(taxes)}`,
             `  Shipping: ${formatPrice(SHIPPING_FLAT)}`,
             `  Total: ${formatPrice(total)}`,
-            `  Payment: Confirmed`,
+            `  Payment: Charged via Skyfire (${settlementType})`,
             `  Shipping to: ${shippingAddress}`,
             `  Status: PAID`,
           ].join("\n"),
@@ -656,7 +686,7 @@ function mcpHandler(req, res) {
 
     let raw = ""
     req.on("data", (c) => (raw += c))
-    req.on("end", () => {
+    req.on("end", async () => {
       let parsed
       try {
         parsed = JSON.parse(raw)
@@ -695,7 +725,10 @@ function mcpHandler(req, res) {
         const name = parsed?.params?.name
         const args = parsed?.params?.arguments ?? {}
         const meta = parsed?.params?._meta
-        const result = callMerchantTool(name, args, meta)
+        const result = await callMerchantTool(name, args, meta).catch((error) => ({
+          content: [{ type: "text", text: `Tool call failed: ${error instanceof Error ? error.message : String(error)}` }],
+          isError: true,
+        }))
         return json(res, 200, { jsonrpc: "2.0", id, result })
       }
 
