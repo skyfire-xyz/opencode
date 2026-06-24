@@ -8,6 +8,7 @@ import type {
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
+import { serverAdvertisesKya } from "./kya"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "mcp.oauth" })
@@ -35,10 +36,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
     // When false (the default, used by the auto-connect / live transport), the SDK's
-    // interactive OAuth path is suppressed: no Dynamic Client Registration and no
-    // browser redirect. A 401 then surfaces as UnauthorizedError so the KYA flow
-    // (and our own handlers) take over. The explicit startAuth() flow passes `true`
-    // to get the full interactive Authorization Code + PKCE behavior.
+    // interactive OAuth path is suppressed *only for servers that advertise the KYA
+    // grant profile*: no Dynamic Client Registration and no browser redirect — the
+    // 401 surfaces as UnauthorizedError so the KYA flow takes over. Non-KYA servers
+    // still get the full standard interactive OAuth (DCR + browser) so this provider
+    // keeps working for ordinary OAuth MCP servers. The explicit startAuth() flow
+    // passes `true` to force interactive behavior regardless of KYA advertisement.
     private allowInteractive = false,
   ) {
     // The MCP SDK treats the auth provider's "server URL" as the *origin* where
@@ -53,6 +56,24 @@ export class McpOAuthProvider implements OAuthClientProvider {
     } catch {
       // Leave as-is; the outer connection code already validates URLs.
     }
+  }
+
+  // Memoized: whether the target server advertises the KYA grant profile. Used to
+  // decide whether to suppress interactive OAuth (KYA servers) or let it proceed
+  // (ordinary OAuth servers). Cached so the SDK's repeated provider calls during a
+  // single auth attempt don't re-run discovery.
+  private kyaAdvertised?: Promise<boolean>
+
+  /**
+   * Whether the SDK's interactive OAuth path (Dynamic Client Registration +
+   * browser redirect) should be suppressed for this server. True only when this
+   * provider is non-interactive (auto-connect transport) AND the server advertises
+   * the KYA grant profile — in which case KYA, not interactive OAuth, is the auth path.
+   */
+  private async shouldSuppressInteractive(): Promise<boolean> {
+    if (this.allowInteractive) return false
+    this.kyaAdvertised ??= serverAdvertisesKya(this.serverUrl)
+    return this.kyaAdvertised
   }
 
   /**
@@ -143,14 +164,15 @@ export class McpOAuthProvider implements OAuthClientProvider {
     }
 
     // No usable client. Returning `undefined` makes the SDK perform Dynamic Client
-    // Registration (POST <AS>/register). The auto-connect / live transport must NOT
-    // do that — KYA is the auth path — so abort here and let the 401 surface as an
-    // UnauthorizedError to our own handlers (connect-time KYA / the tool-call hook).
-    if (!this.allowInteractive) {
-      log.warn("[clientInformation] suppressing Dynamic Client Registration; routing 401 to KYA", {
+    // Registration (POST <AS>/register). For KYA servers on the auto-connect transport
+    // we must NOT do that — KYA is the auth path — so abort and let the 401 surface as
+    // an UnauthorizedError to our handlers (connect-time KYA / the tool-call hook).
+    // Non-KYA servers fall through to standard DCR.
+    if (await this.shouldSuppressInteractive()) {
+      log.warn("[clientInformation] KYA server: suppressing Dynamic Client Registration; routing 401 to KYA", {
         mcpName: this.mcpName,
       })
-      throw new UnauthorizedError("DCR suppressed on auto transport; KYA handles this 401")
+      throw new UnauthorizedError("DCR suppressed for KYA server; KYA handles this 401")
     }
     // Interactive flow: no client info or URL changed — trigger dynamic registration.
     return undefined
@@ -208,13 +230,14 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    if (!this.allowInteractive) {
-      // Auto-connect / live transport: never send the user to a browser. Abort so
-      // the 401 surfaces as UnauthorizedError and KYA handles it.
-      log.warn("[redirectToAuthorization] suppressing interactive OAuth redirect; routing 401 to KYA", {
+    if (await this.shouldSuppressInteractive()) {
+      // KYA server on the auto-connect transport: never send the user to a browser.
+      // Abort so the 401 surfaces as UnauthorizedError and KYA handles it. Non-KYA
+      // servers proceed with the normal browser redirect below.
+      log.warn("[redirectToAuthorization] KYA server: suppressing interactive OAuth redirect; routing 401 to KYA", {
         mcpName: this.mcpName,
       })
-      throw new UnauthorizedError("interactive OAuth redirect suppressed on auto transport; KYA handles this 401")
+      throw new UnauthorizedError("interactive OAuth redirect suppressed for KYA server; KYA handles this 401")
     }
     log.info("[redirectToAuthorization] redirecting to authorization", {
       mcpName: this.mcpName,

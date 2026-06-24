@@ -102,11 +102,11 @@ export async function discoverResourceAuthServer(
       : undefined
   if (!authServer) return undefined
 
-  const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+  const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
     headers: { accept: "application/json" },
   })
-  const asJson = rfc8414.ok
-    ? await rfc8414.json()
+  const asJson = asMetadataRes.ok
+    ? await asMetadataRes.json()
     : await fetch(new URL("/.well-known/openid-configuration", authServer), {
         headers: { accept: "application/json" },
       }).then((r) => (r.ok ? r.json() : undefined))
@@ -117,6 +117,55 @@ export async function discoverResourceAuthServer(
       : undefined
   if (!tokenEndpoint) return undefined
   return { authServer, tokenEndpoint }
+}
+
+/** Grant-profile URN a Resource AS advertises (RFC 8414 metadata) to offer KYA. */
+export const KYA_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:kya"
+
+/** Whether AS/OpenID metadata advertises the KYA grant profile. */
+export function metadataAdvertisesKya(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object") return false
+  const arr = (metadata as Record<string, unknown>)["authorization_grant_profiles_supported"]
+  return Array.isArray(arr) && arr.includes(KYA_GRANT_PROFILE)
+}
+
+/**
+ * Detect whether the Resource AS for an MCP server advertises the KYA grant
+ * profile, following the spec discovery chain (probe 401 → RFC 9728 protected
+ * resource metadata → RFC 8414 AS metadata, falling back to OpenID config).
+ *
+ * Returns `false` on any discovery miss or error so callers default to the
+ * standard (interactive) OAuth path for non-KYA servers.
+ */
+export async function serverAdvertisesKya(serverUrl: string): Promise<boolean> {
+  try {
+    const resourceOrigin = new URL(serverUrl).origin
+    const resourceMetadataUrl =
+      (await probeResourceMetadataUrl(serverUrl)) ??
+      new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
+    const protectedRes = await fetch(resourceMetadataUrl, { headers: { accept: "application/json" } })
+    if (!protectedRes.ok) return false
+
+    const protectedJson = (await protectedRes.json()) as any
+    const authServer =
+      Array.isArray(protectedJson?.authorization_servers) && typeof protectedJson.authorization_servers[0] === "string"
+        ? (protectedJson.authorization_servers[0] as string)
+        : undefined
+    if (!authServer) return false
+
+    const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+      headers: { accept: "application/json" },
+    })
+    const asJson = asMetadataRes.ok
+      ? await asMetadataRes.json()
+      : await fetch(new URL("/.well-known/openid-configuration", authServer), {
+          headers: { accept: "application/json" },
+        }).then((r) => (r.ok ? r.json() : undefined))
+
+    return metadataAdvertisesKya(asJson)
+  } catch {
+    return false
+  }
 }
 
 /**
