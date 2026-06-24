@@ -731,11 +731,17 @@ export const layer = Layer.effect(
             redirectUri: oauthConfig?.redirectUri,
           },
           {
+            // Effectively unused: the provider below is built non-interactive, so it
+            // suppresses DCR + redirect before this would ever fire.
             onRedirect: async (url) => {
               log.info("[connectRemote] oauth redirect requested", { key, url: url.toString() })
             },
           },
           auth,
+          // allowInteractive = false: the auto-connect / live transport must not drive
+          // Dynamic Client Registration or browser OAuth. A 401 surfaces to our KYA
+          // handlers; interactive OAuth is run explicitly via startAuth() (passes true).
+          false,
         )
       }
 
@@ -1381,6 +1387,9 @@ export const layer = Layer.effect(
           },
         },
         auth,
+        // allowInteractive = true: this is the explicit interactive flow, so DCR and
+        // the authorization redirect are expected.
+        true,
       )
 
       const transport = new StreamableHTTPClientTransport(url, { authProvider })

@@ -34,6 +34,12 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
+    // When false (the default, used by the auto-connect / live transport), the SDK's
+    // interactive OAuth path is suppressed: no Dynamic Client Registration and no
+    // browser redirect. A 401 then surfaces as UnauthorizedError so the KYA flow
+    // (and our own handlers) take over. The explicit startAuth() flow passes `true`
+    // to get the full interactive Authorization Code + PKCE behavior.
+    private allowInteractive = false,
   ) {
     // The MCP SDK treats the auth provider's "server URL" as the *origin* where
     // OAuth discovery endpoints live (/.well-known/*). Our MCP transport URLs
@@ -124,19 +130,29 @@ export class McpOAuthProvider implements OAuthClientProvider {
     // Check stored client info (from dynamic registration)
     // Use getForUrl to validate credentials are for the current server URL
     const entry = await Effect.runPromise(this.auth.getForUrl(this.mcpName, this.serverUrl))
-    if (entry?.clientInfo) {
-      // Check if client secret has expired
-      if (entry.clientInfo.clientSecretExpiresAt && entry.clientInfo.clientSecretExpiresAt < Date.now() / 1000) {
-        log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
-        return undefined
-      }
+    const stored = entry?.clientInfo
+    const storedExpired = !!stored?.clientSecretExpiresAt && stored.clientSecretExpiresAt < Date.now() / 1000
+    if (stored && !storedExpired) {
       return {
-        client_id: entry.clientInfo.clientId,
-        client_secret: entry.clientInfo.clientSecret,
+        client_id: stored.clientId,
+        client_secret: stored.clientSecret,
       }
     }
+    if (storedExpired) {
+      log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
+    }
 
-    // No client info or URL changed - will trigger dynamic registration
+    // No usable client. Returning `undefined` makes the SDK perform Dynamic Client
+    // Registration (POST <AS>/register). The auto-connect / live transport must NOT
+    // do that — KYA is the auth path — so abort here and let the 401 surface as an
+    // UnauthorizedError to our own handlers (connect-time KYA / the tool-call hook).
+    if (!this.allowInteractive) {
+      log.warn("[clientInformation] suppressing Dynamic Client Registration; routing 401 to KYA", {
+        mcpName: this.mcpName,
+      })
+      throw new UnauthorizedError("DCR suppressed on auto transport; KYA handles this 401")
+    }
+    // Interactive flow: no client info or URL changed — trigger dynamic registration.
     return undefined
   }
 
@@ -192,7 +208,18 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    log.info("[redirectToAuthorization] redirecting to authorization", { mcpName: this.mcpName, url: authorizationUrl.toString() })
+    if (!this.allowInteractive) {
+      // Auto-connect / live transport: never send the user to a browser. Abort so
+      // the 401 surfaces as UnauthorizedError and KYA handles it.
+      log.warn("[redirectToAuthorization] suppressing interactive OAuth redirect; routing 401 to KYA", {
+        mcpName: this.mcpName,
+      })
+      throw new UnauthorizedError("interactive OAuth redirect suppressed on auto transport; KYA handles this 401")
+    }
+    log.info("[redirectToAuthorization] redirecting to authorization", {
+      mcpName: this.mcpName,
+      url: authorizationUrl.toString(),
+    })
     await this.callbacks.onRedirect(authorizationUrl)
   }
 
