@@ -3,10 +3,11 @@
 A mock MCP server that reproduces the observed **XYZ-Clothiers** tool surface (an
 Auth0/Okta swag store) with a toggleable auth gate that mimics Skyfire KYA protection.
 
-It mirrors the auth pattern from `../merchant-mcp/merchant.js` (HTTP MCP on `/mcp`,
-401 + `WWW-Authenticate` challenge for unauthenticated connections) but exposes the
-`getCategories` / `addToCart` / `checkout` / ... tools instead of the
-`search-for-products` / `pay` toolset.
+It mirrors `../merchant-mcp/merchant.js` on two fronts: the **KYA auth gate** (HTTP MCP
+on `/mcp`, 401 + `WWW-Authenticate` for unauthenticated connections) and the
+**`checkout` → `pay` payment-gateway settlement** (`org.kyapay:pay`). It exposes a
+swag-store tool surface (`getCategories` / `searchProducts` / `addToCart` / `checkout` /
+`pay` / …) over a small mock catalog (Auth0/Okta apparel plus Skyfire & "I ♥ KYAPay" swag).
 
 This directory has two processes:
 
@@ -39,7 +40,8 @@ to cart without guessing.
 | `addToCart`         | Add item (`productId`, `quantity`) |
 | `removeFromCart`    | Remove item (`productId`)          |
 | `clearCart`         | Empty the cart                     |
-| `checkout`          | Create a checkout session          |
+| `checkout`          | Quote the cart (subtotal, tax, shipping, total) — a preview, no charge |
+| `pay`               | Settle the cart and place the order; the payment token arrives via `_meta` from the gateway (`shippingAddress` optional) |
 | `getOrder`          | Order details (`orderId`)          |
 | `getPreviousOrders` | Order history (`limit`, `offset`)  |
 
@@ -104,6 +106,27 @@ The mock MCP server points its `authorization_servers` at the mock auth server
 KYA tokens are **not** minted by this mock — they must come from Skyfire. The auth
 server and MCP server share `ACCESS_TOKEN_SECRET` so the issued access token is
 verifiable on the resource side.
+
+## Payment flow: checkout → pay → settlement
+
+Once connected (KYA Bearer token in hand), the cart is settled with a second token —
+a **pay token** — exactly like `merchant.js`. This rides on the opencode payment
+gateway (`org.kyapay:pay`):
+
+1. `checkout` returns an order summary (subtotal, tax, shipping, total) as a normal
+   result with **no** payment signal — a preview to confirm with the user.
+2. `pay` called **without** a token returns `isError: true` plus a `payments/*` signal
+   in `_meta` (settlement types, total, currency, accepted issuers, seller id).
+3. The opencode gateway intercepts that signal, mints a pay token via the configured
+   issuer's `create-pay-token`, and **retries `pay`** with
+   `payments/settlement/token` injected in `_meta`.
+4. `pay` with a token decodes it, checks expiry, marks the order **PAID**, and clears
+   the cart.
+
+The amount sent to `create-pay-token` is scaled by `SETTLEMENT_SCALE` (default tiny)
+so QA mints stay sub-cent while the catalog/summaries still show real dollar prices —
+see the env vars below. This is two distinct tokens: the **KYA access token** authorizes
+the connection (transport `Bearer`), the **pay token** settles the purchase (`_meta`).
 
 ## Discovery metadata (RFC 9728)
 
@@ -174,10 +197,11 @@ Payment settlement (used by `checkout` / `pay`):
   `ES256` (what Skyfire uses, per the official `verifyToken` example).
 - `MOCK_SKYFIRE_EXPECTED_TYP` — required JWT header `typ`. Default: `kya+jwt`. Set to
   an empty string to skip the `typ` check.
-- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default: unset
-  (the `sdm` check is **skipped**), because the seller domain is chosen by the
-  client/Skyfire at mint time and varies per target (e.g. `auth101.dev`,
-  `mcp-server.com`). Set it to enforce a specific seller.
+- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default:
+  `mcp-server.com` (the placeholder the agent sends for a localhost target). The seller
+  domain is chosen by the client/Skyfire at mint time and varies per target (e.g.
+  `auth101.dev`); change this to match your target, or set it to an empty string to
+  **skip** the `sdm` check.
 - `AUTH_PORT`, `HOST`, `AUTH_PUBLIC_BASE_URL` — network overrides.
 
 KYA assertion validation follows Skyfire's official
@@ -191,6 +215,12 @@ identity (`hid.email`).
 Both servers log in a compact `[functionName] message ...` format (tokens are
 truncated in output), so you can trace the full handshake — token verification,
 the gate decision, and each tool dispatch — directly in each process's stdout.
+
+Entries are spaced out with blank lines, and a labeled `=====` divider brackets each
+incoming request, tagged with the server name (`MCP SERVER` / `AUTH SERVER`) so the
+two processes' output is easy to tell apart when running interleaved under
+`npm run dev`. Tool calls additionally get `TOOL CALL ▶ <name>` / `TOOL CALL END ◀ <name>`
+dividers around their begin/end.
 
 ## Wire into opencode
 
