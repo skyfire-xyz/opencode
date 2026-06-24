@@ -12,8 +12,8 @@ The agent does **not** call the issuer's REST APIs directly — minting always g
 through an MCP tool call on the issuer.
 
 > This is the operations guide. For the design/architecture reference (data
-> structures, decision matrix, flow walkthrough, security model), see
-> [KYA-TECH-SPEC.md](KYA-TECH-SPEC.md).
+> structures, decision matrix, flow walkthrough, security model), see the
+> companion technical specification.
 
 ---
 
@@ -85,6 +85,27 @@ When you connect a protected MCP server, the agent does (simplified):
 6. **Retry MCP with the Bearer access token**
    - The agent retries `POST <server>/mcp` with `Authorization: Bearer <access_token>`.
    - On success, the server is marked **connected** and tool definitions are loaded.
+
+### What the authorization server validates
+
+The exchange's trust comes entirely from the assertion, so the AS validates it
+field-by-field before issuing a token — following Skyfire's published KYA
+token-verification reference:
+
+- **Signature** against the issuer's JWKS (`<iss>/.well-known/jwks.json`), with `alg`
+  pinned to **`ES256`** and `iss` matching the expected Skyfire environment.
+- **`typ`** (header) is the KYA token type (e.g. `kya+jwt`).
+- **`env`** matches the expected environment (`production` / `sandbox` / `qa`).
+- **`iat`** is epoch-seconds in the past, **`exp`** is epoch-seconds in the future,
+  and **`jti`** is a UUID that hasn't been seen before (replay protection).
+- **Seller binding:** `sdm` (seller domain) for an *external seller*, or `ssi`
+  (seller service id) for an *onboarded service*.
+- **`hid.email`** is a valid email, and the `aid` / `hid` identity claims are present.
+
+Any failure returns `invalid_grant` and no token is issued. A signature or `iss`
+mismatch usually means the assertion was minted for a **different Skyfire environment**
+than the AS expects. The full per-field reference (with the exact rules) is in the
+companion technical specification.
 
 ### Key point: no browser redirect
 
@@ -192,7 +213,7 @@ with this precedence:
 
 1. **Start a protected MCP server and its OAuth AS.** Use a reference harness that
    serves the protected `/mcp` endpoint plus the AS discovery/registration/token
-   endpoints (see [KYA-TECH-SPEC.md](KYA-TECH-SPEC.md) §15). The AS should advertise
+   endpoints (see the companion technical specification). The AS should advertise
    the KYA grant profile and verify real issuer-signed assertions against the
    issuer's JWKS.
 2. **Configure the agent** with the protected server and the KYA issuer (above).
