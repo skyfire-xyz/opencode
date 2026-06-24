@@ -49,6 +49,7 @@ export const McpPaths = {
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
   kyaAuthorize: "/mcp/:name/kya-authorize",
+  kyaDecline: "/mcp/:name/kya-decline",
   disconnect: "/mcp/:name/disconnect",
 } as const
 
@@ -150,6 +151,18 @@ export const McpApi = HttpApi.make("mcp")
             identifier: "mcp.kyaAuthorize",
             description:
               "Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.",
+          }),
+        ),
+        HttpApiEndpoint.post("kyaDecline", McpPaths.kyaDecline, {
+          params: { name: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Skyfire KYA sign-in declined"),
+          error: McpServerNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.kyaDecline",
+            description:
+              "Decline a Skyfire KYA sign-in prompt, so a tool call blocking on consent stops waiting immediately.",
           }),
         ),
         HttpApiEndpoint.post("disconnect", McpPaths.disconnect, {

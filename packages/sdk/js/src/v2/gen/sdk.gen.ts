@@ -100,6 +100,8 @@ import type {
   McpDisconnectResponses,
   McpKyaAuthorizeErrors,
   McpKyaAuthorizeResponses,
+  McpKyaDeclineErrors,
+  McpKyaDeclineResponses,
   McpLocalConfig,
   McpRemoteConfig,
   McpStatusErrors,
@@ -2224,6 +2226,36 @@ export class Mcp extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<McpKyaAuthorizeResponses, McpKyaAuthorizeErrors, ThrowOnError>({
       url: "/mcp/{name}/kya-authorize",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Decline a Skyfire KYA sign-in prompt, so a tool call blocking on consent stops waiting immediately.
+   */
+  public kyaDecline<ThrowOnError extends boolean = false>(
+    parameters: {
+      name: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "name" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<McpKyaDeclineResponses, McpKyaDeclineErrors, ThrowOnError>({
+      url: "/mcp/{name}/kya-decline",
       ...options,
       ...params,
     })

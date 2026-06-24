@@ -30,6 +30,7 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventMcpKyaConsentRequired
+  | EventMcpKyaConsentResolved
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
@@ -832,6 +833,7 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventMcpKyaConsentRequired
+    | EventMcpKyaConsentResolved
     | EventCommandExecuted
     | EventProjectUpdated
     | EventSessionCompacted
@@ -2710,6 +2712,15 @@ export type EventMcpKyaConsentRequired = {
   type: "mcp.kya.consent.required"
   properties: {
     name: string
+  }
+}
+
+export type EventMcpKyaConsentResolved = {
+  id: string
+  type: "mcp.kya.consent.resolved"
+  properties: {
+    name: string
+    ok: boolean
   }
 }
 
@@ -5381,6 +5392,40 @@ export type McpKyaAuthorizeResponses = {
 }
 
 export type McpKyaAuthorizeResponse = McpKyaAuthorizeResponses[keyof McpKyaAuthorizeResponses]
+
+export type McpKyaDeclineData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/mcp/{name}/kya-decline"
+}
+
+export type McpKyaDeclineErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * McpServerNotFoundError
+   */
+  404: McpServerNotFoundError
+}
+
+export type McpKyaDeclineError = McpKyaDeclineErrors[keyof McpKyaDeclineErrors]
+
+export type McpKyaDeclineResponses = {
+  /**
+   * Skyfire KYA sign-in declined
+   */
+  200: boolean
+}
+
+export type McpKyaDeclineResponse = McpKyaDeclineResponses[keyof McpKyaDeclineResponses]
 
 export type McpDisconnectData = {
   body?: never

@@ -55,6 +55,14 @@ export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "aut
     },
   }))
 
+  // Declining: in authorize mode a tool call is blocking on this prompt, so tell
+  // the server to stop waiting immediately instead of timing out. (Connect mode has
+  // no waiter — closing the dialog is enough.) Best-effort; close regardless.
+  const decline = () => {
+    if (props.mode === "authorize") void sdk.client.mcp.kyaDecline({ name: props.name }).catch(() => {})
+    dialog.close()
+  }
+
   // Capitalize the first letter of each word (split on - _ space) for display,
   // preserving separators and any uppercase the server key already carries — so
   // "xyz-clothiers" → "Xyz-Clothiers" and "XYZ-Clothiers" stays "XYZ-Clothiers".
@@ -64,7 +72,7 @@ export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "aut
     <Dialog title={language.t("dialog.kyaConsent.title", { name: merchantName() })} fit>
       <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
         <div class="flex justify-end gap-2">
-          <Button variant="ghost" size="large" onClick={() => dialog.close()} disabled={confirm.isPending}>
+          <Button variant="ghost" size="large" onClick={decline} disabled={confirm.isPending}>
             {language.t("dialog.kyaConsent.no")}
           </Button>
           <Button variant="primary" size="large" onClick={() => confirm.mutate()} disabled={confirm.isPending}>

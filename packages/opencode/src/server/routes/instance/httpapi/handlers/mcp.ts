@@ -104,6 +104,19 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return result.status === "connected"
     })
 
+    const kyaDecline = Effect.fn("McpHttpApi.kyaDecline")(function* (ctx: { params: { name: string } }) {
+      yield* mcp
+        .kyaDecline(ctx.params.name)
+        .pipe(
+          Effect.catchTag("MCP.NotFoundError", (error) =>
+            Effect.fail(
+              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
+            ),
+          ),
+        )
+      return true
+    })
+
     const disconnect = Effect.fn("McpHttpApi.disconnect")(function* (ctx: { params: { name: string } }) {
       yield* mcp
         .disconnect(ctx.params.name)
@@ -126,6 +139,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       .handle("authRemove", authRemove)
       .handle("connect", connect)
       .handle("kyaAuthorize", kyaAuthorize)
+      .handle("kyaDecline", kyaDecline)
       .handle("disconnect", disconnect)
   }),
 )

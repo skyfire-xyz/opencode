@@ -86,6 +86,17 @@ export const KyaConsentRequired = BusEvent.define(
   }),
 )
 
+// Emitted when a Skyfire KYA sign-in attempt resolves (approved+minted, declined,
+// or mint failed). Lets a tool call that's blocking on consent stop waiting at once
+// instead of polling out the full timeout, and lets the UI dismiss its prompt.
+export const KyaConsentResolved = BusEvent.define(
+  "mcp.kya.consent.resolved",
+  Schema.Struct({
+    name: Schema.String,
+    ok: Schema.Boolean,
+  }),
+)
+
 export const Failed = NamedError.create("MCPFailed", {
   name: Schema.String,
 })
@@ -505,7 +516,31 @@ function isUnauthorizedError(error: unknown): boolean {
 //   - gate: sign-in needed but not approved (timed out) → return a prompt result
 //   - passthrough: unrelated 401 (not a KYA server) → rethrow unchanged
 type KyaToolHook = {
-  onUnauthorized: () => Promise<{ action: "retry" } | { action: "gate"; text: string } | { action: "passthrough" }>
+  onUnauthorized: (
+    abortSignal?: AbortSignal,
+  ) => Promise<{ action: "retry" } | { action: "gate"; text: string } | { action: "passthrough" }>
+}
+
+// Process-global signal from kyaAuthorize/kyaDecline (HTTP handlers) to a tool call
+// that's blocking on consent. Keyed by server name; the waiter consumes and clears
+// it. Same process as the poll (instances are in-process), so a plain Map suffices.
+const kyaConsentResolutions = new Map<string, { ok: boolean; error?: string }>()
+
+// setTimeout sleep that resolves early if the abort signal fires, so a cancelled
+// turn doesn't keep the consent poll alive for the rest of its interval.
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve()
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer)
+        resolve()
+      },
+      { once: true },
+    )
+  })
 }
 
 // Convert MCP tool definition to AI SDK Tool type
@@ -529,7 +564,7 @@ function convertMcpTool(
   return dynamicTool({
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
-    execute: async (args: unknown) => {
+    execute: async (args: unknown, options?: { abortSignal?: AbortSignal }) => {
       const run = () =>
         gateway
           ? executeWithGateway({
@@ -555,7 +590,7 @@ function convertMcpTool(
         // user to sign in and waits; when approved (a fresh token is stored) we retry
         // this same call inline so it completes in one go. Everything else rethrows.
         if (!kya || !isUnauthorizedError(error)) throw error
-        const outcome = await kya.onUnauthorized()
+        const outcome = await kya.onUnauthorized(options?.abortSignal)
         if (outcome.action === "retry") {
           try {
             return await run()
@@ -649,6 +684,7 @@ export interface Interface {
   readonly kyaAuthorize: (
     name: string,
   ) => Effect.Effect<{ status: "connected" | "failed"; error?: string }, NotFoundError>
+  readonly kyaDecline: (name: string) => Effect.Effect<void, NotFoundError>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -1163,10 +1199,25 @@ export const layer = Layer.effect(
       if (mcp.type !== "remote")
         return { status: "failed" as const, error: "KYA is only supported for remote MCP servers." }
       const minted = yield* mintKya(name, mcp.url)
-      if (!minted.minted) return { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
+      if (!minted.minted) {
+        // Tell any tool call blocking on this sign-in to stop waiting now.
+        kyaConsentResolutions.set(name, { ok: false, error: minted.error })
+        yield* bus.publish(KyaConsentResolved, { name, ok: false }).pipe(Effect.ignore)
+        return { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
+      }
       const s = yield* InstanceState.get(state)
       if (s.status[name]?.status !== "connected") s.status[name] = { status: "connected" as const }
+      kyaConsentResolutions.set(name, { ok: true })
+      yield* bus.publish(KyaConsentResolved, { name, ok: true }).pipe(Effect.ignore)
       return { status: "connected" as const }
+    })
+
+    // The user declined the Skyfire sign-in prompt. Signal any blocking tool call so
+    // it returns immediately instead of waiting out the consent window.
+    const kyaDecline = Effect.fn("MCP.kyaDecline")(function* (name: string) {
+      yield* requireMcpConfig(name)
+      kyaConsentResolutions.set(name, { ok: false, error: "declined by user" })
+      yield* bus.publish(KyaConsentResolved, { name, ok: false }).pipe(Effect.ignore)
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -1222,14 +1273,16 @@ export const layer = Layer.effect(
             const remoteUrl = entry && isMcpConfigured(entry) && entry.type === "remote" ? entry.url : undefined
             const kya: KyaToolHook | undefined = remoteUrl
               ? {
-                  onUnauthorized: async () => {
+                  onUnauthorized: async (abortSignal) => {
                     const support = await detectKyaSupport(clientName, remoteUrl).catch(
                       () => ({ supportsKya: false }) as Awaited<ReturnType<typeof detectKyaSupport>>,
                     )
                     if (!support.supportsKya) return { action: "passthrough" as const }
                     const origin = new URL(remoteUrl).origin
-                    // Snapshot the current (rejected/absent) token so we can detect a
-                    // *fresh* mint, not a stale one already on disk.
+                    // Drop any resolution left over from a prior attempt so we don't act
+                    // on a stale signal, then snapshot the current (rejected/absent) token
+                    // so we can detect a *fresh* mint, not one already on disk.
+                    kyaConsentResolutions.delete(clientName)
                     const before = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
                     // Prompt for sign-in via the global bus (the UI auto-opens the
                     // consent dialog). McpAuth is a global file, so kyaAuthorize's mint
@@ -1237,11 +1290,28 @@ export const layer = Layer.effect(
                     await bridge.promise(bus.publish(KyaConsentRequired, { name: clientName }).pipe(Effect.ignore))
                     // Wait (in this same tool call) for the user to approve and a fresh
                     // token to land, so we can retry inline — no second prompt needed.
+                    // Short-circuit on: turn abort, an explicit resolve (decline / mint
+                    // failure), or a fresh token; otherwise time out.
                     const deadline = Date.now() + KYA_CONSENT_WAIT_MS
                     while (Date.now() < deadline) {
-                      await new Promise((resolve) => setTimeout(resolve, KYA_CONSENT_POLL_MS))
+                      if (abortSignal?.aborted) {
+                        log.info("[kya] consent wait aborted (turn cancelled)", { name: clientName })
+                        return { action: "passthrough" as const }
+                      }
+                      const resolution = kyaConsentResolutions.get(clientName)
+                      if (resolution && !resolution.ok) {
+                        kyaConsentResolutions.delete(clientName)
+                        return {
+                          action: "gate" as const,
+                          text: `Skyfire KYA sign-in for "${clientName}" did not complete: ${resolution.error ?? "declined"}.`,
+                        }
+                      }
                       const token = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
-                      if (token && token !== before) return { action: "retry" as const }
+                      if (token && token !== before) {
+                        kyaConsentResolutions.delete(clientName)
+                        return { action: "retry" as const }
+                      }
+                      await sleepAbortable(KYA_CONSENT_POLL_MS, abortSignal)
                     }
                     log.info("[kya] consent not approved within wait window", { name: clientName })
                     return {
@@ -1522,6 +1592,7 @@ export const layer = Layer.effect(
       add,
       connect,
       kyaAuthorize,
+      kyaDecline,
       disconnect,
       getPrompt,
       readResource,
