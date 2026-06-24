@@ -35,21 +35,8 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
-    // When false (the default, used by the auto-connect / live transport), the SDK's
-    // interactive OAuth path is suppressed *only for servers that advertise the KYA
-    // grant profile*: no Dynamic Client Registration and no browser redirect — the
-    // 401 surfaces as UnauthorizedError so the KYA flow takes over. Non-KYA servers
-    // still get the full standard interactive OAuth (DCR + browser) so this provider
-    // keeps working for ordinary OAuth MCP servers. The explicit startAuth() flow
-    // passes `true` to force interactive behavior regardless of KYA advertisement.
     private allowInteractive = false,
   ) {
-    // The MCP SDK treats the auth provider's "server URL" as the *origin* where
-    // OAuth discovery endpoints live (/.well-known/*). Our MCP transport URLs
-    // often include the MCP RPC path (e.g. http://host:port/mcp). Normalize
-    // that to the origin so discovery doesn't 404 on /mcp/.well-known/* and so
-    // tokens stored by the out-of-band KYA flow (keyed by origin) are matched
-    // by getForUrl() here.
     try {
       const parsed = new URL(this.serverUrl)
       this.serverUrl = parsed.origin
@@ -226,9 +213,6 @@ export class McpOAuthProvider implements OAuthClientProvider {
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
     if (await this.shouldSuppressInteractive()) {
-      // KYA server on the auto-connect transport: never send the user to a browser.
-      // Abort so the 401 surfaces as UnauthorizedError and KYA handles it. Non-KYA
-      // servers proceed with the normal browser redirect below.
       log.warn("[redirectToAuthorization] KYA server: suppressing interactive OAuth redirect; routing 401 to KYA", {
         mcpName: this.mcpName,
       })
