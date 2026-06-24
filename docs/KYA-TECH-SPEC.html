@@ -259,10 +259,14 @@ configured servers. It drives two things:</p>
 <p>The agent does <strong>not</strong> eagerly connect servers at startup. A connection (and any
 KYA it triggers) happens on demand when the user enables a server.</p>
 <h3>6.3 Entry point, consent, and the issuer gate</h3>
-<p>KYA runs in one place: the handler that fires when a transport connect returns an
-<strong>Unauthorized (401)</strong> result and the guards in §7.1 pass. That handler drives
-detection, the consent gate, the issuer check, and the mint.</p>
-<p>Connecting a KYA-protected server therefore takes two passes:</p>
+<p>KYA has <strong>two</strong> entry points that share the same mint machinery (§7), differing only
+in <em>when</em> the challenge arrives:</p>
+<ul>
+<li><strong>Connect-time</strong> — the handler that fires when a transport connect returns an <strong>Unauthorized (401)</strong> and the guards in §7.1 pass (described in this section).</li>
+<li><strong>Tool-call-time</strong> — a 401 (or an auth-required tool result) on a <em>later</em> tool call, after the agent has already connected unauthenticated (see §6.5).</li>
+</ul>
+<p>The connect-time handler drives detection, the consent gate, the issuer check, and the
+mint. Connecting a KYA-protected server therefore takes two passes:</p>
 <ol>
 <li><strong>First connect (no consent).</strong> The handler runs discovery (§7.2). If the server advertises KYA, it stops at <code>needs_kya_consent</code> rather than minting — KYA carries the agent's identity, so the user approves it explicitly before any token is minted.</li>
 </ol>
@@ -276,6 +280,19 @@ detection, the consent gate, the issuer check, and the mint.</p>
 <li>KYA is only attempted on the <strong>StreamableHTTP</strong> branch, once per connect, and only when the §7.1 guards pass.</li>
 <li>A transport cannot be reused after a failed connect, so the post-KYA retry builds a <strong>fresh</strong> StreamableHTTP transport; the credential layer now returns the token the silent flow just stored.</li>
 </ul>
+<h3>6.5 Tool-call-time challenge</h3>
+<p>A server need not reject the <em>connection</em>. It can accept an unauthenticated connect —
+<code>initialize</code>, <code>tools/list</code>, and any <strong>open</strong> tools all succeed with no token — and
+challenge only when a <strong>protected</strong> tool is called. The agent handles this lazily, in
+the wrapper around each tool's <code>execute</code>:</p>
+<ul>
+<li>If a tool call surfaces an auth failure <strong>and</strong> the server advertises KYA, the agent runs the same silent KYA flow (§7) and, on success, <strong>retries that same tool call</strong> with the now-stored Bearer token. The result of the retry is returned to the model.</li>
+<li>The failure is recognized two ways, because servers signal it differently: - a <strong>thrown 401</strong> — <code>UnauthorizedError</code>, or an error carrying <code>code === 401</code> / a <code>401</code>/<code>unauthorized</code> message; or - a <strong>tool result flagged <code>isError</code></strong> whose text indicates auth is required (<code>unauthorized</code>, <code>forbidden</code>, <code>401</code>, <code>sign-in</code>, <code>kya</code>, …). Detecting this form matters because some resources return a normal <code>200</code> result flagged <code>isError</code> with a sign-in message instead of a transport 401.</li>
+<li>The mint goes through the same <strong>enabled-issuer gate</strong> as the connect-time path (§6.3): no usable issuer → the call is gated with a sign-in message rather than silently failing. The §7.1 transport guards are connect-specific and don't apply here; the tool-call path keys off KYA advertisement (§7.2) plus the issuer gate.</li>
+<li>The stored token is reused for the rest of the session, so subsequent protected calls don't re-challenge.</li>
+</ul>
+<p>A single server can therefore mix open and protected tools, and KYA fires the moment
+the agent first touches a protected one — not necessarily at connect.</p>
 <hr>
 <h2>7. The Silent KYA Flow</h2>
 <p>The silent KYA flow returns one of three outcomes:</p>
@@ -644,6 +661,11 @@ end-to-end testing:</p>
         end
     end
 </code></pre>
+<p>The diagram shows the challenge arriving at connect. The <strong>tool-call-time</strong> variant
+(§6.5) is the same mint/exchange, just triggered later: the connect at the top
+succeeds with no token, the agent calls open tools normally, and the <code>401</code> (or
+<code>isError</code> sign-in result) arrives on the first <strong>protected <code>tools/call</code></strong> — at which
+point the mint runs and the agent retries that tool call with the Bearer token.</p>
 <hr>
 <h2>17. Error Handling &amp; Edge Cases</h2>
 <table>

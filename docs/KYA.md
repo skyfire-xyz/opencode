@@ -102,6 +102,30 @@ If the server does **not** advertise KYA, the agent always falls back to the
 interactive flow regardless of that toggle (KYA is purely an opt-in optimization
 keyed on the AS metadata).
 
+### The challenge can come at a tool call, not just at connect
+
+A server doesn't have to reject the *connection*. It can let the agent connect, run
+`initialize` / `tools/list`, and call **open** tools (e.g. catalog browsing) with no
+token at all — and only challenge when the agent calls a **protected** tool. In that
+case:
+
+- The connection succeeds and tools load; status is `connected`. No KYA yet.
+- The agent browses freely (open tools return `200`).
+- The **first protected tool call** comes back as an auth challenge, which kicks off
+  the KYA flow (discover → consent → mint → exchange) right then. On success the agent
+  **retries that same tool call** with the Bearer access token, and it succeeds.
+
+The agent recognizes the challenge two ways, because servers signal it differently:
+
+- a **transport `401`** thrown by the tool call (e.g. this mock's protected tools), or
+- a normal tool **result flagged `isError`** whose text says auth is required (e.g. the
+  real XYZ-Clothiers returns *"This tool requires a Skyfire KYA sign-in…"* with a `200`).
+
+Either way the same mint/exchange machinery runs and the stored token is reused for the
+rest of the session — only the **trigger point** differs (connect-time vs tool-call-time).
+So a single server can expose a mix of open and protected tools, and KYA fires lazily
+the moment the agent first touches a protected one.
+
 ### Token lifetime (no local expiry, no refresh)
 
 Because the silent path stores only the access token (no expiry), a KYA-minted token

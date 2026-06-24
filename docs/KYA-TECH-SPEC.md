@@ -249,11 +249,16 @@ KYA it triggers) happens on demand when the user enables a server.
 
 ### 6.3 Entry point, consent, and the issuer gate
 
-KYA runs in one place: the handler that fires when a transport connect returns an
-**Unauthorized (401)** result and the guards in §7.1 pass. That handler drives
-detection, the consent gate, the issuer check, and the mint.
+KYA has **two** entry points that share the same mint machinery (§7), differing only
+in *when* the challenge arrives:
 
-Connecting a KYA-protected server therefore takes two passes:
+- **Connect-time** — the handler that fires when a transport connect returns an
+  **Unauthorized (401)** and the guards in §7.1 pass (described in this section).
+- **Tool-call-time** — a 401 (or an auth-required tool result) on a *later* tool call,
+  after the agent has already connected unauthenticated (see §6.5).
+
+The connect-time handler drives detection, the consent gate, the issuer check, and the
+mint. Connecting a KYA-protected server therefore takes two passes:
 
 1. **First connect (no consent).** The handler runs discovery (§7.2). If the
    server advertises KYA, it stops at `needs_kya_consent` rather than minting —
@@ -282,6 +287,33 @@ The agent tries **StreamableHTTP first, then SSE**. Important nuances:
 - A transport cannot be reused after a failed connect, so the post-KYA retry
   builds a **fresh** StreamableHTTP transport; the credential layer now returns
   the token the silent flow just stored.
+
+### 6.5 Tool-call-time challenge
+
+A server need not reject the *connection*. It can accept an unauthenticated connect —
+`initialize`, `tools/list`, and any **open** tools all succeed with no token — and
+challenge only when a **protected** tool is called. The agent handles this lazily, in
+the wrapper around each tool's `execute`:
+
+- If a tool call surfaces an auth failure **and** the server advertises KYA, the agent
+  runs the same silent KYA flow (§7) and, on success, **retries that same tool call**
+  with the now-stored Bearer token. The result of the retry is returned to the model.
+- The failure is recognized two ways, because servers signal it differently:
+  - a **thrown 401** — `UnauthorizedError`, or an error carrying `code === 401` /
+    a `401`/`unauthorized` message; or
+  - a **tool result flagged `isError`** whose text indicates auth is required
+    (`unauthorized`, `forbidden`, `401`, `sign-in`, `kya`, …). Detecting this form
+    matters because some resources return a normal `200` result flagged `isError`
+    with a sign-in message instead of a transport 401.
+- The mint goes through the same **enabled-issuer gate** as the connect-time path
+  (§6.3): no usable issuer → the call is gated with a sign-in message rather than
+  silently failing. The §7.1 transport guards are connect-specific and don't apply
+  here; the tool-call path keys off KYA advertisement (§7.2) plus the issuer gate.
+- The stored token is reused for the rest of the session, so subsequent protected
+  calls don't re-challenge.
+
+A single server can therefore mix open and protected tools, and KYA fires the moment
+the agent first touches a protected one — not necessarily at connect.
 
 ---
 
@@ -700,6 +732,12 @@ sequenceDiagram
         end
     end
 ```
+
+The diagram shows the challenge arriving at connect. The **tool-call-time** variant
+(§6.5) is the same mint/exchange, just triggered later: the connect at the top
+succeeds with no token, the agent calls open tools normally, and the `401` (or
+`isError` sign-in result) arrives on the first **protected `tools/call`** — at which
+point the mint runs and the agent retries that tool call with the Bearer token.
 
 ---
 
