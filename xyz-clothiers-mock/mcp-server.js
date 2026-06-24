@@ -59,6 +59,10 @@ const ACCEPTED_ISSUERS = (process.env.ACCEPTED_ISSUERS ?? "https://mcp-qa.skyfir
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean)
+// Skyfire REST API used by `pay` to actually CHARGE the pay token (mirrors
+// merchant.js). The seller API key authenticates the charge — override via env.
+const SKYFIRE_API_BASE_URL = (process.env.SKYFIRE_API_BASE_URL ?? "https://api-qa.skyfire.xyz").replace(/\/$/, "")
+const SKYFIRE_SELLER_API_KEY = process.env.SKYFIRE_SELLER_API_KEY ?? "8987b55a-44f7-4f64-ab8e-1ff76663b03c"
 
 // ---------------------------------------------------------------------------
 // Derived configuration (no env reads below this point).
@@ -365,7 +369,36 @@ function paymentSignal(total, subTotal, taxes, shipping) {
   }
 }
 
-function callTool(name, args, ctx) {
+// Charge a Skyfire pay token for `amount` via the Skyfire REST API. Ported from
+// merchant.js: POST { token, chargeAmount } to /api/v1/tokens/charge with the
+// seller API key. Returns { ok, body } on success, { ok: false, error } otherwise.
+async function chargeSkyfireToken(token, amount) {
+  const url = `${SKYFIRE_API_BASE_URL}/api/v1/tokens/charge`
+  log("chargeSkyfireToken", "════ charge BEGIN ════", {
+    url,
+    chargeAmount: String(amount),
+    token: preview(token),
+    tokenLength: typeof token === "string" ? token.length : undefined,
+  })
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "skyfire-api-key": SKYFIRE_SELLER_API_KEY,
+    },
+    body: JSON.stringify({ token, chargeAmount: String(amount) }),
+  })
+  const body = await response.text()
+  if (response.ok) {
+    log("chargeSkyfireToken", "════ charge OK ════", { status: response.status, body: preview(body, 200) })
+    return { ok: true, body }
+  }
+  const error = body || `Skyfire charge failed with status ${response.status}`
+  log("chargeSkyfireToken", "════ charge FAILED ════", { status: response.status, error: preview(error, 200) })
+  return { ok: false, error }
+}
+
+async function callTool(name, args, ctx) {
   log("callTool", "dispatching tool", { name, args, authed: ctx.authed, session: ctx.session })
 
   if (name === "getCategories") {
@@ -542,6 +575,23 @@ function callTool(name, args, ctx) {
       return fail("Payment token has expired.")
     }
 
+    if (settlementType && !ACCEPTED_SETTLEMENT_TYPES.includes(settlementType)) {
+      log("callTool", "pay: unsupported settlement type", { settlementType })
+      return fail(`Unsupported settlement type: ${String(settlementType)}`)
+    }
+
+    // Actually charge the pay token via Skyfire (mirrors merchant.js). The token
+    // was minted for the SCALED (sub-cent) amount, so charge that — not the real
+    // dollar total — or the charge would exceed what the token authorized.
+    const settleTotal = r6(total * SETTLEMENT_SCALE)
+    log("callTool", "pay: charging pay token via Skyfire", { settlementType, settleTotal, displayTotal: total })
+    const charge = await chargeSkyfireToken(payToken, settleTotal)
+    if (!charge.ok) {
+      log("callTool", "pay: charge failed, aborting order", { error: preview(charge.error, 200) })
+      return fail(`Payment charge failed: ${charge.error}`)
+    }
+    log("callTool", "pay: charge succeeded, confirming order")
+
     const orderId = ++orderSeq
     const items = cart.map((i) => ({ ...i }))
     orders.set(orderId, {
@@ -572,7 +622,7 @@ function callTool(name, args, ctx) {
         `  Taxes: $${taxes.toFixed(2)}`,
         `  Shipping: $${SHIPPING_FLAT.toFixed(2)}`,
         `  Total: $${total.toFixed(2)}`,
-        "  Payment: Confirmed",
+        `  Payment: Charged via Skyfire${settlementType ? ` (${settlementType})` : ""}`,
         `  Shipping to: ${shipTo}`,
         "  Status: PAID",
       ].join("\n"),
@@ -793,7 +843,7 @@ const server = http.createServer((req, res) => {
 
   let raw = ""
   req.on("data", (c) => (raw += c))
-  req.on("end", () => {
+  req.on("end", async () => {
     let parsed
     try {
       parsed = JSON.parse(raw)
@@ -855,7 +905,7 @@ const server = http.createServer((req, res) => {
         return text(res, 401, "Unauthorized", { "www-authenticate": challenge, ...CORS })
       }
       if (!isOpen) log("handleMcp", "✓ protected tool authorized — KYA access token accepted", { name })
-      const result = callTool(name, args, { authed, session, token, meta })
+      const result = await callTool(name, args, { authed, session, token, meta })
       const responseText = (result.content ?? [])
         .map((c) => (typeof c?.text === "string" ? c.text : JSON.stringify(c)))
         .join("\n")
