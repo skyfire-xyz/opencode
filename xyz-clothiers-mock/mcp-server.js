@@ -62,7 +62,7 @@ const ACCEPTED_ISSUERS = (process.env.ACCEPTED_ISSUERS ?? "https://mcp-qa.skyfir
 // Skyfire REST API used by `pay` to actually CHARGE the pay token (mirrors
 // merchant.js). The seller API key authenticates the charge — override via env.
 const SKYFIRE_API_BASE_URL = (process.env.SKYFIRE_API_BASE_URL ?? "https://api-qa.skyfire.xyz").replace(/\/$/, "")
-const SKYFIRE_SELLER_API_KEY = process.env.SKYFIRE_SELLER_API_KEY ?? "8987b55a-44f7-4f64-ab8e-1ff76663b03c"
+const SKYFIRE_SELLER_API_KEY = process.env.SKYFIRE_SELLER_API_KEY ?? "f401e1f2-7d32-4d8e-be96-7a8363d36e32"
 
 // ---------------------------------------------------------------------------
 // Derived configuration (no env reads below this point).
@@ -119,8 +119,7 @@ const PRODUCTS = [
     name: "Bella+Canvas Unisex Sponge Fleece Full Zip Hoodie",
     price: 45,
     categoryId: "cat-apparel",
-    description:
-      "A unisex full-zip sponge fleece hoodie with white drawcords, ribbed cuffs, and a retail fit.",
+    description: "A unisex full-zip sponge fleece hoodie with white drawcords, ribbed cuffs, and a retail fit.",
     featured: true,
   },
   {
@@ -192,7 +191,7 @@ const PRODUCTS = [
     name: "I ♥ KYAPay Tee",
     price: 25,
     categoryId: "cat-skyfire",
-    description: "Cotton crew-neck tee with a bold \"I ♥ KYAPay\" print — for agents who love getting paid.",
+    description: 'Cotton crew-neck tee with a bold "I ♥ KYAPay" print — for agents who love getting paid.',
     featured: true,
   },
   {
@@ -201,7 +200,7 @@ const PRODUCTS = [
     name: "I ♥ KYAPay Mug",
     price: 16,
     categoryId: "cat-skyfire",
-    description: "11oz ceramic mug printed with \"I ♥ KYAPay\" — settle your morning coffee in one tap.",
+    description: '11oz ceramic mug printed with "I ♥ KYAPay" — settle your morning coffee in one tap.',
     featured: false,
   },
 ]
@@ -403,9 +402,9 @@ async function callTool(name, args, ctx) {
 
   if (name === "getCategories") {
     log("callTool", "getCategories: returning categories", { count: CATEGORIES.length })
-    const lines = CATEGORIES.map(
-      (c) => `- ${c.name} (ID: ${c.id}, Slug: ${c.slug}) - ${c.itemCount} swag items`,
-    ).join("\n")
+    const lines = CATEGORIES.map((c) => `- ${c.name} (ID: ${c.id}, Slug: ${c.slug}) - ${c.itemCount} swag items`).join(
+      "\n",
+    )
     return ok(`Found ${CATEGORIES.length} categories:\n${lines}`)
   }
 
@@ -433,9 +432,7 @@ async function callTool(name, args, ctx) {
   if (name === "searchProducts") {
     const q = String(args.query ?? "").toLowerCase()
     const limit = Number.isFinite(args.limit) ? args.limit : 12
-    let results = PRODUCTS.filter(
-      (p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q),
-    )
+    let results = PRODUCTS.filter((p) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q))
     if (args.categoryId) results = results.filter((p) => p.categoryId === args.categoryId)
     if (Number.isFinite(args.minPrice)) results = results.filter((p) => p.price >= args.minPrice)
     if (Number.isFinite(args.maxPrice)) results = results.filter((p) => p.price <= args.maxPrice)
@@ -458,9 +455,7 @@ async function callTool(name, args, ctx) {
     const cart = cartFor(ctx.session)
     log("callTool", "getCart: returning cart", { session: ctx.session, items: cart.length })
     if (cart.length === 0) return ok("Your cart is empty.")
-    const lines = cart
-      .map((i) => `  - ${i.quantity}x ${i.name} @ $${i.price.toFixed(2)}`)
-      .join("\n")
+    const lines = cart.map((i) => `  - ${i.quantity}x ${i.name} @ $${i.price.toFixed(2)}`).join("\n")
     const total = cart.reduce((s, i) => s + i.price * i.quantity, 0)
     return ok(`Cart contents:\n${lines}\n  Total: $${total.toFixed(2)}`)
   }
@@ -801,10 +796,12 @@ const server = http.createServer((req, res) => {
   // doesn't implement. (The real XYZ-Clothiers server delegates to an Auth0 tenant.)
   if (
     req.method === "GET" &&
-    (url.pathname === "/.well-known/oauth-authorization-server" ||
-      url.pathname === "/.well-known/openid-configuration")
+    (url.pathname === "/.well-known/oauth-authorization-server" || url.pathname === "/.well-known/openid-configuration")
   ) {
-    log("handleASMetadata", "serving AS metadata (RFC 8414) pointing at auth server", { path: url.pathname, authServer })
+    log("handleASMetadata", "serving AS metadata (RFC 8414) pointing at auth server", {
+      path: url.pathname,
+      authServer,
+    })
     return json(
       res,
       200,
