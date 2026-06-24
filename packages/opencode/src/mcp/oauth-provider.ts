@@ -52,12 +52,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   /**
-   * Whether the SDK's interactive OAuth path (Dynamic Client Registration +
-   * browser redirect) should be suppressed for this server. True only when this
-   * provider is non-interactive (auto-connect transport) AND the server advertises
-   * the KYA grant profile — in which case KYA, not interactive OAuth, is the auth path.
+   * Whether KYA should handle this connection's auth instead of the SDK's
+   * interactive OAuth (Dynamic Client Registration + browser redirect).
+   *
+   * KYA takes priority when the server advertises the KYA grant profile, so on the
+   * auto-connect transport we defer to it (suppress the interactive flow and let the
+   * 401 surface to the KYA handlers). Everything else falls back to opencode's default
+   * OAuth behavior: servers that don't advertise KYA, and the explicit startAuth()
+   * flow (`allowInteractive`), which always runs interactive OAuth regardless of KYA.
    */
-  private async shouldSuppressInteractive(): Promise<boolean> {
+  private async shouldDeferToKya(): Promise<boolean> {
     return !this.allowInteractive && (await this.isKyaServer())
   }
 
@@ -212,11 +216,11 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    if (await this.shouldSuppressInteractive()) {
-      log.warn("[redirectToAuthorization] KYA server: suppressing interactive OAuth redirect; routing 401 to KYA", {
+    if (await this.shouldDeferToKya()) {
+      log.warn("[redirectToAuthorization] deferring to KYA: suppressing interactive OAuth redirect; routing 401 to KYA", {
         mcpName: this.mcpName,
       })
-      throw new UnauthorizedError("interactive OAuth redirect suppressed for KYA server; KYA handles this 401")
+      throw new UnauthorizedError("interactive OAuth redirect deferred to KYA; KYA handles this 401")
     }
     log.info("[redirectToAuthorization] redirecting to authorization", {
       mcpName: this.mcpName,

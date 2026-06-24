@@ -848,10 +848,16 @@ export const layer = Layer.effect(
                       )
                     }
 
-                    // Consent given but minting failed — surface a clear failure
-                    // rather than silently falling back to interactive OAuth.
-                    lastStatus = { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
-                    return undefined
+                    // Consent given but KYA minting couldn't complete (e.g. no issuer
+                    // configured, or a mint / token-exchange error). KYA is the priority
+                    // when advertised, but it falls back to opencode's default OAuth:
+                    // don't return here — let control fall through to the needs_auth path
+                    // below, which stores the pending transport and prompts the user to run
+                    // `opencode mcp auth <key>` (the interactive DCR + browser flow).
+                    log.warn("[connectRemote] KYA minting failed; falling back to default OAuth", {
+                      key,
+                      error: minted.error ?? "Silent KYA token minting failed",
+                    })
                   }
                 }
 
