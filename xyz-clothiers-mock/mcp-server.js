@@ -23,30 +23,69 @@
 import http from "http"
 import crypto from "crypto"
 
+// ---------------------------------------------------------------------------
+// Environment variables — every process.env read lives here, in one place.
+// ---------------------------------------------------------------------------
+
+// Network.
 const port = Number(process.env.PORT ?? "8799")
 const host = process.env.HOST ?? "127.0.0.1"
 const publicBaseUrl = (process.env.PUBLIC_BASE_URL ?? `http://${host}:${port}`).replace(/\/$/, "")
-const requireAuth = process.env.REQUIRE_AUTH !== "0"
 
-// Resource-metadata fields, copied from the real XYZ-Clothiers server
-// (https://store.auth101.dev/.well-known/oauth-protected-resource). The real
-// server points at a separate Auth0 authorization server; we default to the mock
-// auth server (auth-server.js, port 8788), but AUTH_SERVER can override it.
-const resourceUri = `${publicBaseUrl}/mcp`
+// Auth gate. REQUIRE_AUTH=0 runs fully open; ACCEPT_ANY_TOKEN=1 accepts any
+// non-empty Bearer without verifying. Access tokens are HS256 JWTs from the mock
+// auth server, verified with the shared ACCESS_TOKEN_SECRET; their iss must match
+// AUTH_SERVER and their aud must be this resource.
+const requireAuth = process.env.REQUIRE_AUTH !== "0"
+const acceptAnyToken = process.env.ACCEPT_ANY_TOKEN === "1"
+const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET ?? "mock-access-dev-secret"
 const authServer = (process.env.AUTH_SERVER ?? "http://127.0.0.1:8788").replace(/\/$/, "")
 const RESOURCE_NAME = process.env.RESOURCE_NAME ?? "Auth101 Swag MCP Server"
-const SCOPES_SUPPORTED = ["openid", "profile", "email"]
 
-// Access tokens are HS256 JWTs issued by the mock auth server. We verify them
-// with the same shared secret. The token's iss must match the auth server origin
-// and its aud must be this resource. ACCEPT_ANY_TOKEN=1 falls back to the old
-// "any non-empty Bearer" behavior for quick manual testing.
-const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET ?? "mock-access-dev-secret"
-const acceptAnyToken = process.env.ACCEPT_ANY_TOKEN === "1"
+// Payment settlement (used by `checkout` / `pay`), mirroring ../merchant-mcp/merchant.js.
+// SETTLEMENT_SCALE multiplies the amount sent to the issuer's create-pay-token so QA
+// mints stay sub-cent (catalog/summaries still show real dollars); 0.00001 turns a
+// ~$100 order into ~$0.001. Set 1 to settle the real dollar amount.
+const TAX_RATE = Number(process.env.TAX_RATE ?? "0.08")
+const SHIPPING_FLAT = Number(process.env.SHIPPING_FLAT ?? "5")
+const SETTLEMENT_CURRENCY = process.env.SETTLEMENT_CURRENCY ?? "USD"
+const SETTLEMENT_SCALE = Number(process.env.SETTLEMENT_SCALE ?? "0.00001")
+// The merchant's identity on the Skyfire payment network (defaults to the
+// merchant-mcp demo seller). The gateway needs this to mint a pay token.
+const SELLER_SERVICE_ID = process.env.SELLER_SERVICE_ID ?? "662a28ea-fbd7-4bd3-9f05-3d3e6ea14d03"
+const SELLER_SEARCH_HINT = process.env.SELLER_SEARCH_HINT ?? "Auth0 and Okta swag merchant"
+// CSV of issuer origins allowed to settle COIN payments (closed-loop).
+const ACCEPTED_ISSUERS = (process.env.ACCEPTED_ISSUERS ?? "https://mcp-qa.skyfire.xyz")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+// ---------------------------------------------------------------------------
+// Derived configuration (no env reads below this point).
+// ---------------------------------------------------------------------------
+
+// Resource-metadata fields, copied from the real XYZ-Clothiers server
+// (https://store.auth101.dev/.well-known/oauth-protected-resource).
+const resourceUri = `${publicBaseUrl}/mcp`
+const SCOPES_SUPPORTED = ["openid", "profile", "email"]
+const ACCEPTED_SETTLEMENT_TYPES = ["org.kyapay:kya-pay:coin", "org.kyapay:pay:coin"]
+// Round to 2 dp for display; 6 dp for the scaled settlement amounts so sub-cent
+// values don't collapse to 0.
+const r2 = (n) => Math.round(n * 100) / 100
+const r6 = (n) => Math.round(n * 1e6) / 1e6
 
 // Compact logger: prints "[functionName] message ...". Extra args are appended.
+// A leading blank line separates consecutive entries so the log is easy to scan.
 function log(fn, message, ...rest) {
-  console.log(`[${fn}] ${message}`, ...rest)
+  console.log(`\n\n[${fn}] ${message}`, ...rest)
+}
+
+// Labeled divider. The SERVER_NAME tag makes this server's log blocks easy to
+// tell apart from the auth server's (they interleave under `npm run dev`), and
+// dividers bracket the beginning/end of each request and tool call.
+const SERVER_NAME = "MCP SERVER"
+function divider(title) {
+  console.log(`\n========================= ${SERVER_NAME} · ${title} =========================`)
 }
 
 // Truncate long tokens for log output so we never dump a full JWT.
@@ -66,6 +105,7 @@ const CATEGORIES = [
   { id: "cat-drinkware", name: "Drinkware", slug: "drinkware", itemCount: 1 },
   { id: "cat-hats", name: "Hats & Accessories", slug: "hats-accessories", itemCount: 1 },
   { id: "cat-office", name: "Office & Outdoor", slug: "office-outdoor", itemCount: 4 },
+  { id: "cat-skyfire", name: "Skyfire & KYAPay", slug: "skyfire-kyapay", itemCount: 5 },
 ]
 
 const PRODUCTS = [
@@ -113,6 +153,51 @@ const PRODUCTS = [
     price: 18,
     categoryId: "cat-bags",
     description: "Heavy-duty canvas tote with reinforced handles.",
+    featured: false,
+  },
+  {
+    id: "prod-skyfire-hoodie",
+    slug: "skyfire-embroidered-hoodie",
+    name: "Skyfire Embroidered Hoodie",
+    price: 48,
+    categoryId: "cat-skyfire",
+    description: "Midnight-navy fleece hoodie with a tonal embroidered Skyfire logo on the chest.",
+    featured: true,
+  },
+  {
+    id: "prod-skyfire-tee",
+    slug: "skyfire-logo-tee",
+    name: "Skyfire Logo Tee",
+    price: 24,
+    categoryId: "cat-skyfire",
+    description: "Soft tri-blend crew-neck tee with the Skyfire wordmark across the front.",
+    featured: false,
+  },
+  {
+    id: "prod-skyfire-cap",
+    slug: "skyfire-dad-cap",
+    name: "Skyfire Dad Cap",
+    price: 26,
+    categoryId: "cat-skyfire",
+    description: "Unstructured cotton dad cap with an embroidered Skyfire mark and an adjustable strap.",
+    featured: false,
+  },
+  {
+    id: "prod-kyapay-tee",
+    slug: "i-love-kyapay-tee",
+    name: "I ♥ KYAPay Tee",
+    price: 25,
+    categoryId: "cat-skyfire",
+    description: "Cotton crew-neck tee with a bold \"I ♥ KYAPay\" print — for agents who love getting paid.",
+    featured: true,
+  },
+  {
+    id: "prod-kyapay-mug",
+    slug: "i-love-kyapay-mug",
+    name: "I ♥ KYAPay Mug",
+    price: 16,
+    categoryId: "cat-skyfire",
+    description: "11oz ceramic mug printed with \"I ♥ KYAPay\" — settle your morning coffee in one tap.",
     featured: false,
   },
 ]
@@ -212,8 +297,21 @@ const TOOLS = [
   },
   {
     name: "checkout",
-    description: "Create a checkout session for the current cart",
+    description:
+      "Quote the current cart: returns the order summary (items, subtotal, tax, shipping, total). Present it to the user and ask for confirmation BEFORE calling pay.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "pay",
+    description:
+      "Complete payment for the current cart. The payment token is supplied automatically by the payment gateway via _meta; confirm the order total with the user before calling pay.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        shippingAddress: { type: "string", description: "Shipping address (optional)" },
+      },
+      additionalProperties: false,
+    },
   },
   {
     name: "getOrder",
@@ -245,6 +343,27 @@ const TOOLS = [
 
 const ok = (text) => ({ content: [{ type: "text", text }] })
 const fail = (text) => ({ content: [{ type: "text", text }], isError: true })
+
+// Build the payments/* signal the opencode gateway settles. COIN-suffixed types
+// carry an accepted-issuer constraint (closed-loop); card-style types would not.
+// Shape mirrors merchant.js and matches the gateway's parsePaymentSignal.
+function paymentSignal(total, subTotal, taxes, shipping) {
+  const issuersByType = {}
+  for (const type of ACCEPTED_SETTLEMENT_TYPES) {
+    if (type.endsWith(":coin")) issuersByType[type] = ACCEPTED_ISSUERS
+  }
+  return {
+    "payments/settlement/types": ACCEPTED_SETTLEMENT_TYPES,
+    "payments/settlement/issuers": issuersByType,
+    "payments/settlement/currency": SETTLEMENT_CURRENCY,
+    "payments/amount/total": total,
+    "payments/amount/sub-total": subTotal,
+    "payments/amount/taxes": taxes,
+    "payments/amount/shipping_and_handling": shipping,
+    "payments/settlement/seller_service_id": SELLER_SERVICE_ID,
+    "payments/settlement/seller_search": SELLER_SEARCH_HINT,
+  }
+}
 
 function callTool(name, args, ctx) {
   log("callTool", "dispatching tool", { name, args, authed: ctx.authed, session: ctx.session })
@@ -352,18 +471,111 @@ function callTool(name, args, ctx) {
       log("callTool", "checkout: cart empty, rejecting")
       return fail("Cart is empty. Add items before checkout.")
     }
-    const total = cart.reduce((s, i) => s + i.price * i.quantity, 0)
+    // Quote only — deliberately a normal (non-error) result with NO payments/*
+    // signal. The order is created and the cart cleared in `pay`, after the
+    // gateway settles. Emitting the signal here would authorize payment before
+    // the user confirms.
+    const subTotal = r2(cart.reduce((s, i) => s + i.price * i.quantity, 0))
+    const taxes = r2(subTotal * TAX_RATE)
+    const total = r2(subTotal + taxes + SHIPPING_FLAT)
+    const items = cart.map((i) => `  - ${i.quantity}x ${i.name} @ $${i.price.toFixed(2)}`).join("\n")
+    log("callTool", "checkout: quoted cart", { subTotal, taxes, total, items: cart.length })
+    return ok(
+      [
+        "Order summary:",
+        items,
+        `  Subtotal: $${subTotal.toFixed(2)}`,
+        `  Taxes: $${taxes.toFixed(2)}`,
+        `  Shipping: $${SHIPPING_FLAT.toFixed(2)}`,
+        `  Total: $${total.toFixed(2)}`,
+        "",
+        "Confirm these details with the user, then call `pay` to complete the purchase.",
+      ].join("\n"),
+    )
+  }
+
+  if (name === "pay") {
+    const cart = cartFor(ctx.session)
+    if (cart.length === 0) {
+      log("callTool", "pay: cart empty, nothing to pay for")
+      return fail("Cart is empty. Nothing to pay for.")
+    }
+    const subTotal = r2(cart.reduce((s, i) => s + i.price * i.quantity, 0))
+    const taxes = r2(subTotal * TAX_RATE)
+    const total = r2(subTotal + taxes + SHIPPING_FLAT)
+
+    const payToken = ctx.meta?.["payments/settlement/token"]
+    const settlementType = ctx.meta?.["payments/settlement/type"]
+
+    if (!payToken || typeof payToken !== "string") {
+      // No token yet — return the payment signal so the gateway resolves a
+      // settlement type, mints a pay token via the issuer, and retries `pay`.
+      // The signal carries the SCALED (sub-cent) amounts so the minted token fits
+      // the Skyfire balance; the user-facing text still shows the real dollar total.
+      const settleSubTotal = r6(subTotal * SETTLEMENT_SCALE)
+      const settleTaxes = r6(taxes * SETTLEMENT_SCALE)
+      const settleShipping = r6(SHIPPING_FLAT * SETTLEMENT_SCALE)
+      const settleTotal = r6(total * SETTLEMENT_SCALE)
+      log("callTool", "════ pay: no payment token → emitting payments/* required signal ════", {
+        displayTotal: total,
+        settleTotal,
+        scale: SETTLEMENT_SCALE,
+      })
+      return {
+        content: [{ type: "text", text: `Payment Required: $${total.toFixed(2)}` }],
+        isError: true,
+        _meta: paymentSignal(settleTotal, settleSubTotal, settleTaxes, settleShipping),
+      }
+    }
+
+    // Token present — validate (decode + expiry) and confirm the order. As in
+    // merchant.js, the mock only decodes the JWT and checks expiry; it does not
+    // re-verify the issuer signature here.
+    const payload = decodeJwtPayload(payToken)
+    if (!payload) {
+      log("callTool", "pay: payment token could not be decoded")
+      return fail("Invalid payment token: could not decode JWT.")
+    }
+    const now = Math.floor(Date.now() / 1000)
+    if (typeof payload.exp === "number" && payload.exp <= now) {
+      log("callTool", "pay: payment token expired", { exp: payload.exp, now })
+      return fail("Payment token has expired.")
+    }
+
     const orderId = ++orderSeq
+    const items = cart.map((i) => ({ ...i }))
     orders.set(orderId, {
       orderId,
-      status: "PENDING",
-      items: cart.map((i) => ({ ...i })),
+      status: "PAID",
+      items,
+      subTotal,
+      taxes,
+      shipping: SHIPPING_FLAT,
       total,
+      currency: SETTLEMENT_CURRENCY,
+      settlementType: typeof settlementType === "string" ? settlementType : null,
     })
     carts.set(ctx.session, [])
-    log("callTool", "checkout: order created", { orderId, total, status: "PENDING" })
+    log("callTool", "════ pay: settlement confirmed — order PAID ════", { orderId, total, settlementType })
+    const lines = items.map((i) => `  - ${i.quantity}x ${i.name} @ $${i.price.toFixed(2)}`).join("\n")
+    const shipTo =
+      typeof args.shippingAddress === "string" && args.shippingAddress.trim()
+        ? args.shippingAddress
+        : "123 Demo St, San Francisco, CA 94102"
     return ok(
-      `Checkout session created.\n  Order ID: ${orderId}\n  Total: $${total.toFixed(2)}\n  Status: PENDING`,
+      [
+        "Order confirmed!",
+        `  Order ID: ${orderId}`,
+        "  Items:",
+        lines,
+        `  Subtotal: $${subTotal.toFixed(2)}`,
+        `  Taxes: $${taxes.toFixed(2)}`,
+        `  Shipping: $${SHIPPING_FLAT.toFixed(2)}`,
+        `  Total: $${total.toFixed(2)}`,
+        "  Payment: Confirmed",
+        `  Shipping to: ${shipTo}`,
+        "  Status: PAID",
+      ].join("\n"),
     )
   }
 
@@ -451,8 +663,7 @@ function verifyAccessToken(token) {
     log("verifyAccessToken", "rejected: audience mismatch", { aud: payload.aud, expected: resourceUri })
     return
   }
-  // Require the `mcp` scope, matching merchant.js / mock-mcp-kya-server.ts. The
-  // auth server mints "openid profile email mcp" from a KYA exchange, so a token
+  // The auth server mints "openid profile email mcp" from a KYA exchange, so a token
   // without `mcp` didn't come through the KYA path we expect.
   const scope = typeof payload.scope === "string" ? payload.scope : ""
   if (!scope.split(/\s+/).includes("mcp")) {
@@ -461,6 +672,18 @@ function verifyAccessToken(token) {
   }
   log("verifyAccessToken", "token accepted", { sub: payload.sub, scope: payload.scope, exp: payload.exp })
   return payload
+}
+
+// Decode a JWT payload for inspection only (no signature/claim verification).
+// Used by `pay` to read the gateway-supplied pay token's `exp`.
+function decodeJwtPayload(token) {
+  const p = typeof token === "string" ? token.split(".")[1] : undefined
+  if (!p) return undefined
+  try {
+    return JSON.parse(Buffer.from(p, "base64url").toString("utf8"))
+  } catch {
+    return undefined
+  }
 }
 
 function tokenValid(token) {
@@ -488,6 +711,7 @@ const CORS = {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? "/", publicBaseUrl)
+  divider(`${req.method} ${url.pathname}`)
   log("handleRequest", "incoming request", { method: req.method, path: url.pathname })
 
   if (req.method === "OPTIONS") {
@@ -611,8 +835,10 @@ const server = http.createServer((req, res) => {
     if (method === "tools/call") {
       const name = parsed?.params?.name
       const args = parsed?.params?.arguments ?? {}
+      const meta = parsed?.params?._meta
       const isOpen = OPEN_TOOLS.has(name)
-      log("handleMcp", "──── tool call REQUEST ────", { name, open: isOpen, authed, arguments: args })
+      divider(`TOOL CALL ▶ ${name}`)
+      log("handleMcp", "tool call REQUEST", { name, open: isOpen, authed, arguments: args })
       // Gate protected tools. With no valid access token, return a real HTTP 401
       // + WWW-Authenticate challenge (RFC 9728) so the client kicks off the KYA
       // token exchange: discover the AS → mint a Skyfire KYA token → exchange it
@@ -625,14 +851,16 @@ const server = http.createServer((req, res) => {
           reason: token ? "token present but invalid/expired" : "no token",
         })
         log("handleMcp", "→ replying 401 + WWW-Authenticate to trigger KYA token exchange", { name, challenge })
+        divider(`TOOL CALL END ◀ ${name} (401)`)
         return text(res, 401, "Unauthorized", { "www-authenticate": challenge, ...CORS })
       }
       if (!isOpen) log("handleMcp", "✓ protected tool authorized — KYA access token accepted", { name })
-      const result = callTool(name, args, { authed, session })
+      const result = callTool(name, args, { authed, session, token, meta })
       const responseText = (result.content ?? [])
         .map((c) => (typeof c?.text === "string" ? c.text : JSON.stringify(c)))
         .join("\n")
-      log("handleMcp", "──── tool call RESPONSE ────", { name, isError: !!result.isError, content: responseText })
+      log("handleMcp", "tool call RESPONSE", { name, isError: !!result.isError, content: responseText })
+      divider(`TOOL CALL END ◀ ${name}`)
       return json(res, 200, { jsonrpc: "2.0", id, result })
     }
 

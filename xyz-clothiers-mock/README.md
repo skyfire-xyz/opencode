@@ -3,18 +3,19 @@
 A mock MCP server that reproduces the observed **XYZ-Clothiers** tool surface (an
 Auth0/Okta swag store) with a toggleable auth gate that mimics Skyfire KYA protection.
 
-It mirrors the auth pattern from `../merchant-mcp/merchant.js` (HTTP MCP on `/mcp`,
-401 + `WWW-Authenticate` challenge for unauthenticated connections) but exposes the
-`getCategories` / `addToCart` / `checkout` / ... tools instead of the
-`search-for-products` / `pay` toolset.
+It mirrors `../merchant-mcp/merchant.js` on two fronts: the **KYA auth gate** (HTTP MCP
+on `/mcp`, 401 + `WWW-Authenticate` for unauthenticated connections) and the
+**`checkout` → `pay` payment-gateway settlement** (`org.kyapay:pay`). It exposes a
+swag-store tool surface (`getCategories` / `searchProducts` / `addToCart` / `checkout` /
+`pay` / …) over a small mock catalog (Auth0/Okta apparel plus Skyfire & "I ♥ KYAPay" swag).
 
 This directory has two processes:
 
-- **`server.js`** — the mock MCP resource (port `8799`). Serves the swag tools and
+- **`mcp-server.js`** — the mock MCP resource (port `8799`). Serves the swag tools and
   gates the protected ones behind a Bearer access token.
 - **`auth-server.js`** — a mock OAuth Authorization Server (port `8788`). Exchanges a
   **real Skyfire KYA token** for an access token via the `jwt-bearer` grant, then
-  `server.js` accepts that access token.
+  `mcp-server.js` accepts that access token.
 
 ## Tools
 
@@ -39,7 +40,8 @@ to cart without guessing.
 | `addToCart`         | Add item (`productId`, `quantity`) |
 | `removeFromCart`    | Remove item (`productId`)          |
 | `clearCart`         | Empty the cart                     |
-| `checkout`          | Create a checkout session          |
+| `checkout`          | Quote the cart (subtotal, tax, shipping, total) — a preview, no charge |
+| `pay`               | Settle the cart and place the order; the payment token arrives via `_meta` from the gateway (`shippingAddress` optional) |
 | `getOrder`          | Order details (`orderId`)          |
 | `getPreviousOrders` | Order history (`limit`, `offset`)  |
 
@@ -66,7 +68,7 @@ npm run dev          # or: node dev.js  /  npm run start:all
 
 ```bash
 node auth-server.js  # authorization server (port 8788)
-node server.js       # MCP resource (port 8799)
+node mcp-server.js   # MCP resource (port 8799)
 ```
 
 Endpoints:
@@ -105,6 +107,27 @@ KYA tokens are **not** minted by this mock — they must come from Skyfire. The 
 server and MCP server share `ACCESS_TOKEN_SECRET` so the issued access token is
 verifiable on the resource side.
 
+## Payment flow: checkout → pay → settlement
+
+Once connected (KYA Bearer token in hand), the cart is settled with a second token —
+a **pay token** — exactly like `merchant.js`. This rides on the opencode payment
+gateway (`org.kyapay:pay`):
+
+1. `checkout` returns an order summary (subtotal, tax, shipping, total) as a normal
+   result with **no** payment signal — a preview to confirm with the user.
+2. `pay` called **without** a token returns `isError: true` plus a `payments/*` signal
+   in `_meta` (settlement types, total, currency, accepted issuers, seller id).
+3. The opencode gateway intercepts that signal, mints a pay token via the configured
+   issuer's `create-pay-token`, and **retries `pay`** with
+   `payments/settlement/token` injected in `_meta`.
+4. `pay` with a token decodes it, checks expiry, marks the order **PAID**, and clears
+   the cart.
+
+The amount sent to `create-pay-token` is scaled by `SETTLEMENT_SCALE` (default tiny)
+so QA mints stay sub-cent while the catalog/summaries still show real dollar prices —
+see the env vars below. This is two distinct tokens: the **KYA access token** authorizes
+the connection (transport `Bearer`), the **pay token** settles the purchase (`_meta`).
+
 ## Discovery metadata (RFC 9728)
 
 The mock serves `.well-known/oauth-protected-resource` with the same shape as the
@@ -121,7 +144,7 @@ real XYZ-Clothiers server (`https://store.auth101.dev`):
 
 The real server delegates auth to a separate Auth0 tenant
 (`https://auth0.store.auth101.dev`). The mock defaults `authorization_servers` to
-the mock auth server (`http://127.0.0.1:8788`). `server.js` also answers
+the mock auth server (`http://127.0.0.1:8788`). `mcp-server.js` also answers
 `.well-known/oauth-authorization-server` (RFC 8414) for convenience, but since it
 doesn't mint tokens itself, that metadata simply mirrors the real auth server's
 endpoints (`AUTH_SERVER`) rather than advertising routes on its own origin. Set
@@ -133,7 +156,7 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
 
 ## Environment variables
 
-### MCP server (`server.js`)
+### MCP server (`mcp-server.js`)
 
 - `REQUIRE_AUTH=0` — run fully open (no 401, protected tools succeed). Useful for
   quick local testing without the auth server.
@@ -145,6 +168,20 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
   expected token `iss`. Default: `http://127.0.0.1:8788`.
 - `RESOURCE_NAME=<name>` — `resource_name` in resource metadata.
 - `PORT`, `HOST`, `PUBLIC_BASE_URL` — network overrides.
+
+Payment settlement (used by `checkout` / `pay`):
+
+- `SETTLEMENT_SCALE=<n>` — multiplier applied to the amount sent to the issuer's
+  `create-pay-token`. The catalog and order summaries always show **real dollar**
+  prices; the minted pay token uses `price × SETTLEMENT_SCALE`. Default `0.00001`
+  keeps QA mints sub-cent (a ~$100 order mints ~$0.001) so they fit a small Skyfire
+  balance. Set `1` to settle the real dollar amount.
+- `TAX_RATE` (default `0.08`), `SHIPPING_FLAT` (default `5`), `SETTLEMENT_CURRENCY`
+  (default `USD`) — cart math for the quote/settlement.
+- `SELLER_SERVICE_ID` / `SELLER_SEARCH_HINT` — the Skyfire seller the pay token is
+  minted for. Defaults to the merchant-mcp demo seller.
+- `ACCEPTED_ISSUERS=<csv>` — issuer origins allowed to settle COIN payments.
+  Default: `https://mcp-qa.skyfire.xyz`.
 
 ### Auth server (`auth-server.js`)
 
@@ -160,10 +197,11 @@ challenge with `resource_metadata` and `authorization-uri` pointers.
   `ES256` (what Skyfire uses, per the official `verifyToken` example).
 - `MOCK_SKYFIRE_EXPECTED_TYP` — required JWT header `typ`. Default: `kya+jwt`. Set to
   an empty string to skip the `typ` check.
-- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default: unset
-  (the `sdm` check is **skipped**), because the seller domain is chosen by the
-  client/Skyfire at mint time and varies per target (e.g. `auth101.dev`,
-  `mcp-server.com`). Set it to enforce a specific seller.
+- `MOCK_SKYFIRE_EXPECTED_SDM` — required seller-domain (`sdm`) claim. Default:
+  `mcp-server.com` (the placeholder the agent sends for a localhost target). The seller
+  domain is chosen by the client/Skyfire at mint time and varies per target (e.g.
+  `auth101.dev`); change this to match your target, or set it to an empty string to
+  **skip** the `sdm` check.
 - `AUTH_PORT`, `HOST`, `AUTH_PUBLIC_BASE_URL` — network overrides.
 
 KYA assertion validation follows Skyfire's official
@@ -177,6 +215,12 @@ identity (`hid.email`).
 Both servers log in a compact `[functionName] message ...` format (tokens are
 truncated in output), so you can trace the full handshake — token verification,
 the gate decision, and each tool dispatch — directly in each process's stdout.
+
+Entries are spaced out with blank lines, and a labeled `=====` divider brackets each
+incoming request, tagged with the server name (`MCP SERVER` / `AUTH SERVER`) so the
+two processes' output is easy to tell apart when running interleaved under
+`npm run dev`. Tool calls additionally get `TOOL CALL ▶ <name>` / `TOOL CALL END ◀ <name>`
+dividers around their begin/end.
 
 ## Wire into opencode
 

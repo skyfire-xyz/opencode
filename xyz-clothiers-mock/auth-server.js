@@ -16,7 +16,7 @@
 // merchant.js, then mints an HS256 access_token.
 //
 // The access_token is signed with ACCESS_TOKEN_SECRET. The mock MCP server
-// (server.js) verifies access tokens with the same secret, so a token from here
+// (mcp-server.js) verifies access tokens with the same secret, so a token from here
 // unlocks the protected merchant tools.
 //
 // Flow: Skyfire mints kya_token -> POST /oauth/token (jwt-bearer) ->
@@ -28,40 +28,47 @@ import http from "http"
 import crypto from "crypto"
 import { createRemoteJWKSet, jwtVerify } from "jose"
 
-const port = Number(process.env.AUTH_PORT ?? "8788")
-const host = process.env.HOST ?? "127.0.0.1"
-const publicBaseUrl = (process.env.AUTH_PUBLIC_BASE_URL ?? `http://${host}:${port}`).replace(/\/$/, "")
-const authOrigin = publicBaseUrl
+// ---------------------------------------------------------------------------
+// Environment variables — every process.env read lives here, in one place.
+// ---------------------------------------------------------------------------
 
-// Secret used to sign the issued access_token. server.js verifies with the same.
-const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET ?? "mock-access-dev-secret"
-// The audience baked into issued access tokens; must match what /mcp expects.
-const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? "http://127.0.0.1:8799/mcp"
-
-// KYA assertion validation, modeled on Skyfire's official verifyToken example:
-// https://github.com/skyfire-xyz/kyapay/blob/main/code-examples/verifyToken/typescript/src/verifyKyaTokenToExternalSeller.ts
-// We verify the signature against Skyfire's JWKS (pinned to ES256), the issuer,
-// the header `typ`, the common claims (env, iat, jti, exp), the seller domain
-// (sdm), and the KYA identity (hid.email).
+// Static fallback table: Skyfire issuer URL per environment (used by the
+// MOCK_SKYFIRE_ISSUER fallback just below).
 const SKYFIRE_ISSUER_BY_ENV = {
   production: "https://app.skyfire.xyz",
   sandbox: "https://app-sandbox.skyfire.xyz",
   qa: "https://app-qa.skyfire.xyz",
 }
-// Default to the Skyfire QA environment (what this mock has always targeted).
+
+// Network.
+const port = Number(process.env.AUTH_PORT ?? "8788")
+const host = process.env.HOST ?? "127.0.0.1"
+const publicBaseUrl = (process.env.AUTH_PUBLIC_BASE_URL ?? `http://${host}:${port}`).replace(/\/$/, "")
+
+// Issued access tokens: signed with ACCESS_TOKEN_SECRET (mcp-server.js verifies
+// with the same), with aud = MOCK_MCP_RESOURCE_URI (must match what /mcp expects).
+const accessTokenSecret = process.env.ACCESS_TOKEN_SECRET ?? "mock-access-dev-secret"
+const resourceAud = process.env.MOCK_MCP_RESOURCE_URI ?? "http://127.0.0.1:8799/mcp"
+
+// KYA assertion validation, modeled on Skyfire's official verifyToken example:
+// https://github.com/skyfire-xyz/kyapay/blob/main/code-examples/verifyToken/typescript/src/verifyKyaTokenToExternalSeller.ts
+// We verify the signature against Skyfire's JWKS (pinned to ES256 via MOCK_SKYFIRE_ALG),
+// the issuer, the header `typ`, the common claims (env, iat, jti, exp), the seller
+// domain (sdm), and the KYA identity (hid.email). `sdm` varies per target
+// (e.g. "auth101.dev", "mcp-server.com"); set MOCK_SKYFIRE_EXPECTED_SDM to enforce a
+// specific seller, or "" to skip. Defaults target the Skyfire QA environment.
 const expectedEnv = process.env.MOCK_SKYFIRE_ENV ?? "qa"
 const skyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? SKYFIRE_ISSUER_BY_ENV[expectedEnv] ?? SKYFIRE_ISSUER_BY_ENV.qa
 const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? `${skyfireIssuer}/.well-known/jwks.json`
-// Skyfire signs KYA tokens with ES256 (per the verifyToken example). Override via
-// MOCK_SKYFIRE_ALG if needed.
 const skyfireAlg = process.env.MOCK_SKYFIRE_ALG ?? "ES256"
-// Seller-specific expectations. `typ` defaults to the KYA token type. `sdm`
-// (the seller domain) is determined by the client/Skyfire at mint time — not by
-// this mock — and varies per target (e.g. "auth101.dev", "mcp-server.com"), so it
-// defaults to skipped. Set MOCK_SKYFIRE_EXPECTED_SDM to enforce a specific seller;
-// set either to an empty string to skip that check.
 const expectedTyp = process.env.MOCK_SKYFIRE_EXPECTED_TYP ?? "kya+jwt"
 const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "mcp-server.com"
+
+// ---------------------------------------------------------------------------
+// Derived configuration (no env reads below this point).
+// ---------------------------------------------------------------------------
+
+const authOrigin = publicBaseUrl
 const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
 
 // Claim-shape helpers ported from the Skyfire verifyToken example (the example
@@ -79,8 +86,17 @@ const issuedTokens = new Map()
 const seenAssertionJtis = new Map()
 
 // Compact logger: prints "[functionName] message ...". Extra args are appended.
+// A leading blank line separates consecutive entries so the log is easy to scan.
 function log(fn, message, ...rest) {
-  console.log(`[${fn}] ${message}`, ...rest)
+  console.log(`\n\n[${fn}] ${message}`, ...rest)
+}
+
+// Labeled divider. The SERVER_NAME tag makes this server's log blocks easy to
+// tell apart from the MCP server's (they interleave under `npm run dev`), and a
+// divider brackets the start of each request.
+const SERVER_NAME = "AUTH SERVER"
+function divider(title) {
+  console.log(`\n========================= ${SERVER_NAME} · ${title} =========================`)
 }
 
 // Truncate long tokens for log output so we never dump a full JWT.
@@ -274,6 +290,7 @@ function checkAndRememberAssertionJti(payload) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", authOrigin)
+  divider(`${req.method} ${url.pathname}`)
   log("handleRequest", "incoming request", { method: req.method, path: url.pathname })
 
   if (req.method === "OPTIONS") {
