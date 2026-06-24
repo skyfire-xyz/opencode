@@ -64,6 +64,11 @@ const skyfireAlg = process.env.MOCK_SKYFIRE_ALG ?? "ES256"
 const expectedTyp = process.env.MOCK_SKYFIRE_EXPECTED_TYP ?? "kya+jwt"
 const expectedSdm = process.env.MOCK_SKYFIRE_EXPECTED_SDM ?? "mcp-server.com"
 
+// Dynamic Client Registration (DCR) is only used by the interactive OAuth fallback,
+// not the KYA jwt-bearer path. Disabled by default so the AS doesn't advertise or
+// honor /register; set ENABLE_DCR=1 to turn it back on.
+const enableDcr = ["1", "true"].includes((process.env.ENABLE_DCR ?? "").toLowerCase())
+
 // ---------------------------------------------------------------------------
 // Derived configuration (no env reads below this point).
 // ---------------------------------------------------------------------------
@@ -316,7 +321,8 @@ const server = http.createServer(async (req, res) => {
         issuer: authOrigin,
         authorization_endpoint: `${authOrigin}/authorize`,
         token_endpoint: `${authOrigin}/oauth/token`,
-        registration_endpoint: `${authOrigin}/register`,
+        // Only advertise DCR when it's enabled (§ENABLE_DCR); omitted by default.
+        ...(enableDcr ? { registration_endpoint: `${authOrigin}/register` } : {}),
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "urn:ietf:params:oauth:grant-type:jwt-bearer"],
         authorization_grant_profiles_supported: [
@@ -331,6 +337,15 @@ const server = http.createServer(async (req, res) => {
 
   // Dynamic client registration (DCR) — accept anything, mint a client id.
   if (req.method === "POST" && url.pathname === "/register") {
+    if (!enableDcr) {
+      log("handleRegister", "════ /register CALLED but DCR is DISABLED (set ENABLE_DCR=1 to enable) ════")
+      return json(
+        res,
+        404,
+        { error: "registration_not_supported", error_description: "Dynamic client registration is disabled." },
+        CORS,
+      )
+    }
     log("handleRegister", "dynamic client registration request")
     const raw = await readBody(req)
     if (raw.trim().length > 0) {
