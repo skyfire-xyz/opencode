@@ -9,7 +9,7 @@ particular client implementation.
 
 The heart of the integration is the **KYA → OAuth token exchange**: how the assertion
 is minted, the RFC 7523 jwt-bearer request that exchanges it, and the per-field
-validation the AS performs. The assertion-validation algorithm follows Skyfire's
+validation the AS performs. The assertion-validation algorithm follows the issuer's
 published KYA token-verification reference.
 
 ---
@@ -27,9 +27,8 @@ browser session to drive, so it needs a **non-interactive** way to obtain an
 access token in which the **agent's identity** (not a human's browser session)
 is what the resource server authorizes. That is what **KYA** provides:
 
-1. A trusted **issuer** mints a signed **KYA assertion** (a JWT) attesting to the
-   agent's identity and the seller it wants to act against. (Skyfire's MCP server
-   is the issuer in the reference deployment.)
+1. A trusted **issuer** — a dedicated MCP server — mints a signed **KYA assertion**
+   (a JWT) attesting to the agent's identity and the seller it wants to act against.
 2. The agent exchanges that assertion at the resource's **Authorization Server**
    (AS) for a normal OAuth access token, using RFC 7523's
    `urn:ietf:params:oauth:grant-type:jwt-bearer` grant.
@@ -54,7 +53,7 @@ That sibling feature is documented in the Payment Capability section.
 | **Agent**                 | The autonomous MCP client that connects to remote MCP servers on a user's behalf.                                                                                                      |
 | **MCP server / Resource** | The protected remote MCP server the agent wants to use. A plain OAuth 2.1 resource server.                                                                                             |
 | **Resource AS**           | The OAuth Authorization Server protecting the resource. Hosts discovery metadata + the `/token` endpoint.                                                                              |
-| **KYA Issuer**            | A remote MCP server advertising capability `org.kyapay:kya` and exposing a tool (e.g. `create-kya-token`) that mints KYA assertions. Skyfire's MCP server in the reference deployment. |
+| **KYA Issuer**            | A remote MCP server advertising capability `org.kyapay:kya` and exposing a tool (e.g. `create-kya-token`) that mints KYA assertions. |
 | **KYA assertion**         | A signed JWT minted by the issuer, attesting agent identity + seller. _Not_ an OAuth access token.                                                                                     |
 | **Access token**          | A normal OAuth 2.1 Bearer token issued by the Resource AS in exchange for the assertion.                                                                                               |
 | **Capability**            | A URI like `org.kyapay:kya` or `org.kyapay:pay` declared in config, mapped to the issuer tool that fulfills it.                                                                        |
@@ -188,27 +187,26 @@ ignored.
       "type": "remote",
       "url": "https://merchant.example.com/mcp",
     },
-    "skyfire": {
+    "issuer": {
       "type": "remote",
-      "url": "https://mcp.skyfire.xyz/mcp",
+      "url": "https://mcp.issuer.example/mcp",
       "capabilities": {
         "org.kyapay:kya": { "tool": "create-kya-token" },
         "org.kyapay:pay": { "tool": "create-pay-token" },
       },
       "headers": {
-        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
+        "issuer-api-key": "{env:ISSUER_API_KEY}",
       },
     },
   },
 }
 ```
 
-The issuer (`skyfire`) authenticates itself via its `skyfire-api-key` header. It
-never enters the KYA branch — you don't mint a KYA token to talk to the KYA
-issuer.
+The issuer server authenticates itself via its `issuer-api-key` header. It never
+enters the KYA branch — you don't mint a KYA token to talk to the KYA issuer.
 
 > **Security:** API keys must never be stored in plaintext configuration. Use
-> environment interpolation (e.g. `{env:SKYFIRE_API_KEY}`) and supply the secret at
+> environment interpolation (e.g. `{env:ISSUER_API_KEY}`) and supply the secret at
 > runtime.
 
 ---
@@ -230,7 +228,7 @@ An issuer is identified by `{ name, config, tool }`.
 Key properties:
 
 - **Selection is by capability, not by server name.** The example server is named
-  `skyfire`, but any name works.
+  `issuer`, but any name works.
 - **Tool resolution** uses `capabilities["org.kyapay:kya"].tool`. If that is
   empty or missing, the server is **not** treated as an issuer.
 - **First match wins** — if multiple servers advertise KYA, configuration order
@@ -467,11 +465,11 @@ The issuer tool requires **exactly one** seller selector. Priority:
 1. If no issuer is configured, KYA cannot be minted (there is nothing to attempt), so
    the agent falls back to interactive OAuth — the same outcome as when KYA isn't
    advertised. This is **not** treated as a hard failure.
-2. Connect to the issuer via a StreamableHTTP transport carrying the issuer's
-   `headers` (the API key).
-3. `callTool({ name: issuer.tool, arguments: sellerSelector })`, closing the issuer
-   client afterward. The arguments are **exactly** the one seller selector (*Seller selector resolution*); the
-   KYA mint tool takes no other parameters.
+2. Connect to the issuer over its configured transport, carrying the issuer's
+   credential (e.g. an API-key header).
+3. Invoke the issuer's configured KYA tool (an MCP `tools/call`) with the resolved
+   seller selector as its **sole** argument — the KYA mint tool takes no other
+   parameters (*Seller selector resolution*) — then close the issuer connection.
 4. Extract the assertion from the result, preferring a **structured** field over prose:
    - **Structured (preferred).** If the result exposes `structuredContent` or a
      `_meta` field carrying the assertion (e.g. `_meta["org.kyapay/kya"].assertion`),
@@ -494,9 +492,9 @@ the exchange:
 
 | Claim          | Where   | Meaning                                                                          |
 | -------------- | ------- | -------------------------------------------------------------------------------- |
-| `alg`          | header  | Signature algorithm — **`ES256`** for Skyfire.                                   |
+| `alg`          | header  | Signature algorithm — **`ES256`** in the reference deployment.                  |
 | `typ`          | header  | Token type, e.g. **`kya+jwt`**.                                                  |
-| `iss`          | payload | Issuer — the Skyfire environment origin (`https://app.skyfire.xyz`, `…app-sandbox…`, `…app-qa…`). |
+| `iss`          | payload | Issuer — the issuer's environment origin (a distinct origin per environment).   |
 | `env`          | payload | Environment label: `production` / `sandbox` / `qa`.                              |
 | `sub`          | payload | Subject — the agent identifier (UUID).                                           |
 | `aud`          | payload | Audience — the seller's id (a UUID, **not** a URL).                              |
@@ -581,8 +579,8 @@ This section covers the **KYA assertion**; the next subsection covers the **acce
 token**.
 
 The exchange's security rests entirely on the AS validating the assertion before it
-mints anything. The reference algorithm is Skyfire's published KYA token-verification
-example; the steps below match it.
+mints anything. The reference algorithm follows the issuer's published KYA
+token-verification example; the steps below match it.
 
 1. **Signature + algorithm + issuer.** Verify the JWS against the issuer's **JWKS**,
    selecting the key by the header `kid`. Require `iss` to equal the expected issuer
@@ -650,9 +648,9 @@ The AS's trust in the issuer is anchored **out-of-band**, not by the assertion:
   derived from the (still-unverified) assertion's `iss`, which would let an attacker
   choose the key that verifies their own token and is an SSRF vector.
 - **Expected `iss` per environment.** A normative mapping `EXPECTED_ENV → iss` is part
-  of issuer registration, e.g. `production → https://app.skyfire.xyz`,
-  `sandbox → <issuer-sandbox-origin>`, `qa → <issuer-qa-origin>`. (Pin the exact values
-  for your deployment; the reference issuer is Skyfire.)
+  of issuer registration, e.g. `production → https://issuer.example`,
+  `sandbox → https://sandbox.issuer.example`, `qa → https://qa.issuer.example`. (Pin
+  the exact origins for your deployment.)
 - **JWKS caching & rotation.** Cache by `iss`, honoring HTTP `Cache-Control`/`max-age`
   within a bounded min/max TTL. Select the key by `kid`; on an unknown `kid`, refetch
   once (rate-limited) before failing. Fetch with a strict timeout, a response-size cap,
@@ -767,7 +765,8 @@ are replayable until `exp` by design.
 
 ### 7.9 Lifetime of a KYA-minted token (no local expiry, no refresh)
 
-Because the exchange stores no `expiresAt` and no `refreshToken`:
+Because the client stores no expiry timestamp and no refresh token for a KYA-minted
+token:
 
 - The token reads as **authenticated indefinitely** in status checks — even after
   the AS-issued `expires_in` has actually elapsed.
