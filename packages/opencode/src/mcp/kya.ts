@@ -1,4 +1,7 @@
 import { ConfigMCP } from "@/config/mcp"
+import * as Log from "@opencode-ai/core/util/log"
+
+const log = Log.create({ service: "mcp.kya" })
 
 /** Capability URI an MCP server advertises to act as a KYA token issuer. */
 export const KYA_CAPABILITY = "org.kyapay:kya"
@@ -54,6 +57,20 @@ export function extractJwtFromText(input: string): string | undefined {
   return m ? m[1] : undefined
 }
 
+/** Read a string-valued field from an unknown JSON object, else `undefined`. */
+function getStringField(obj: unknown, key: string): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined
+  const value = (obj as Record<string, unknown>)[key]
+  return typeof value === "string" ? value : undefined
+}
+
+/** Read the first element of a string-array field from an unknown JSON object, else `undefined`. */
+function getFirstStringInArrayField(obj: unknown, key: string): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined
+  const value = (obj as Record<string, unknown>)[key]
+  return Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined
+}
+
 /**
  * Probe the MCP endpoint unauthenticated (spec B1) and read the RFC 9728
  * `resource_metadata` pointer from the 401 `WWW-Authenticate` header (B2).
@@ -72,7 +89,11 @@ export async function probeResourceMetadataUrl(serverUrl: string): Promise<strin
     const wwwAuth = res.headers.get("www-authenticate")
     const m = wwwAuth?.match(/resource_metadata="?([^",\s]+)"?/i)
     return m?.[1]
-  } catch {
+  } catch (error) {
+    log.error("[probeResourceMetadataUrl] probe failed; falling back to well-known location", {
+      serverUrl,
+      error,
+    })
     return undefined
   }
 }
@@ -95,26 +116,20 @@ export async function discoverResourceAuthServer(
   })
   if (!protectedRes.ok) return undefined
 
-  const protectedJson = (await protectedRes.json()) as any
-  const authServer =
-    Array.isArray(protectedJson?.authorization_servers) && typeof protectedJson.authorization_servers[0] === "string"
-      ? (protectedJson.authorization_servers[0] as string)
-      : undefined
+  const protectedJson: unknown = await protectedRes.json()
+  const authServer = getFirstStringInArrayField(protectedJson, "authorization_servers")
   if (!authServer) return undefined
 
   const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
     headers: { accept: "application/json" },
   })
-  const asJson = asMetadataRes.ok
+  const asJson: unknown = asMetadataRes.ok
     ? await asMetadataRes.json()
     : await fetch(new URL("/.well-known/openid-configuration", authServer), {
         headers: { accept: "application/json" },
       }).then((r) => (r.ok ? r.json() : undefined))
 
-  const tokenEndpoint =
-    asJson && typeof asJson === "object" && typeof (asJson as any).token_endpoint === "string"
-      ? ((asJson as any).token_endpoint as string)
-      : undefined
+  const tokenEndpoint = getStringField(asJson, "token_endpoint")
   if (!tokenEndpoint) return undefined
   return { authServer, tokenEndpoint }
 }
@@ -146,24 +161,25 @@ export async function serverAdvertisesKya(serverUrl: string): Promise<boolean> {
     const protectedRes = await fetch(resourceMetadataUrl, { headers: { accept: "application/json" } })
     if (!protectedRes.ok) return false
 
-    const protectedJson = (await protectedRes.json()) as any
-    const authServer =
-      Array.isArray(protectedJson?.authorization_servers) && typeof protectedJson.authorization_servers[0] === "string"
-        ? (protectedJson.authorization_servers[0] as string)
-        : undefined
+    const protectedJson: unknown = await protectedRes.json()
+    const authServer = getFirstStringInArrayField(protectedJson, "authorization_servers")
     if (!authServer) return false
 
     const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
       headers: { accept: "application/json" },
     })
-    const asJson = asMetadataRes.ok
+    const asJson: unknown = asMetadataRes.ok
       ? await asMetadataRes.json()
       : await fetch(new URL("/.well-known/openid-configuration", authServer), {
           headers: { accept: "application/json" },
         }).then((r) => (r.ok ? r.json() : undefined))
 
     return metadataAdvertisesKya(asJson)
-  } catch {
+  } catch (error) {
+    log.error("[serverAdvertisesKya] discovery failed; treating server as non-KYA", {
+      serverUrl,
+      error,
+    })
     return false
   }
 }
@@ -185,6 +201,6 @@ export async function exchangeAssertionForAccessToken(
     }),
   })
   if (!res.ok) throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
-  const json = (await res.json()) as any
-  return json && typeof json.access_token === "string" ? json.access_token : undefined
+  const json: unknown = await res.json()
+  return getStringField(json, "access_token")
 }
