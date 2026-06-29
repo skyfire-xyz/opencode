@@ -188,45 +188,6 @@ function resultText(result: CallToolResult): string {
 }
 
 // ---------------------------------------------------------------------------
-// Token cache
-// ---------------------------------------------------------------------------
-
-interface TokenCacheEntry {
-  token: string
-  exp: number
-}
-
-const tokenCache = new Map<string, TokenCacheEntry>()
-
-function cacheKey(settlementType: string, total: number, currency: string) {
-  return `${settlementType}:${total}:${currency}`
-}
-
-function getCachedToken(settlementType: string, total: number, currency: string): string | undefined {
-  const key = cacheKey(settlementType, total, currency)
-  const entry = tokenCache.get(key)
-  if (!entry) return undefined
-  if (Date.now() / 1000 >= entry.exp - 30) {
-    tokenCache.delete(key)
-    return undefined
-  }
-  return entry.token
-}
-
-function setCachedToken(settlementType: string, total: number, currency: string, token: string) {
-  const key = cacheKey(settlementType, total, currency)
-  let exp = Date.now() / 1000 + 300
-  const parts = token.split(".")
-  if (parts.length === 3) {
-    try {
-      const payload = JSON.parse(atob(parts[1]))
-      if (typeof payload.exp === "number") exp = payload.exp
-    } catch {}
-  }
-  tokenCache.set(key, { token, exp })
-}
-
-// ---------------------------------------------------------------------------
 // Capability map (config → server routing)
 // ---------------------------------------------------------------------------
 
@@ -406,107 +367,101 @@ export async function executeWithGateway(input: {
     tool: provider.tool,
   })
 
-  // Check cache first
-  let token = getCachedToken(matchedType, payment.total, payment.currency)
+  // Mint a fresh token. Pay tokens are minted for one-time use only, so we
+  // never cache or reuse them — every payment signal triggers a new mint.
+  const issuerTool = provider.tool
 
-  if (!token) {
-    const issuerTool = provider.tool
+  // Build the _meta to forward payment details to the token issuer
+  const issuerMeta: Record<string, unknown> = {
+    "payments/amount/total": payment.total,
+    "payments/settlement/currency": payment.currency,
+  }
+  if (payment.subTotal !== undefined) issuerMeta["payments/amount/sub-total"] = payment.subTotal
+  if (payment.taxes !== undefined) issuerMeta["payments/amount/taxes"] = payment.taxes
+  if (payment.shippingAndHandling !== undefined)
+    issuerMeta["payments/amount/shipping_and_handling"] = payment.shippingAndHandling
 
-    // Build the _meta to forward payment details to the token issuer
-    const issuerMeta: Record<string, unknown> = {
-      "payments/amount/total": payment.total,
-      "payments/settlement/currency": payment.currency,
+  const sellerServiceId = await resolveSellerServiceId({ payment, providerClient, timeout })
+  if (!sellerServiceId) {
+    log.error("gateway: could not resolve seller service id for issuer", { server: provider.server })
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "Gateway error: the merchant did not provide a seller identity and one could not be resolved, so a payment token could not be issued.",
+        },
+      ],
+      isError: true,
     }
-    if (payment.subTotal !== undefined) issuerMeta["payments/amount/sub-total"] = payment.subTotal
-    if (payment.taxes !== undefined) issuerMeta["payments/amount/taxes"] = payment.taxes
-    if (payment.shippingAndHandling !== undefined)
-      issuerMeta["payments/amount/shipping_and_handling"] = payment.shippingAndHandling
+  }
 
-    const sellerServiceId = await resolveSellerServiceId({ payment, providerClient, timeout })
-    if (!sellerServiceId) {
-      log.error("gateway: could not resolve seller service id for issuer", { server: provider.server })
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "Gateway error: the merchant did not provide a seller identity and one could not be resolved, so a payment token could not be issued.",
-          },
-        ],
-        isError: true,
-      }
+  log.info("gateway: calling token issuer", {
+    server: provider.server,
+    tool: issuerTool,
+    total: payment.total,
+    currency: payment.currency,
+    sellerServiceId,
+  })
+
+  const tokenResult = await providerClient.callTool(
+    {
+      name: issuerTool,
+      arguments: {
+        amount: String(payment.total),
+        sellerServiceId,
+      },
+      _meta: issuerMeta,
+    } as CallToolParams,
+    CallToolResultSchema,
+    { resetTimeoutOnProgress: true, timeout },
+  )
+
+  // Check if the issuer requires a mandate (browser-based authorization)
+  const mandate = parseMandateSignal(tokenResult)
+  if (mandate) {
+    log.info("gateway: issuer requires inline mandate", { url: mandate.url })
+    await open(mandate.url)
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: "Payment authorization required. A browser window has been opened for you to approve the payment. Please retry after authorizing.",
+        },
+      ],
+      isError: true,
     }
+  }
 
-    log.info("gateway: calling token issuer", {
+  if (tokenResult.isError) {
+    log.error("gateway: token issuer returned error", {
       server: provider.server,
       tool: issuerTool,
-      total: payment.total,
-      currency: payment.currency,
-      sellerServiceId,
+      detail: resultText(tokenResult),
     })
-
-    const tokenResult = await providerClient.callTool(
-      {
-        name: issuerTool,
-        arguments: {
-          amount: String(payment.total),
-          sellerServiceId,
-        },
-        _meta: issuerMeta,
-      } as CallToolParams,
-      CallToolResultSchema,
-      { resetTimeoutOnProgress: true, timeout },
-    )
-
-    // Check if the issuer requires a mandate (browser-based authorization)
-    const mandate = parseMandateSignal(tokenResult)
-    if (mandate) {
-      log.info("gateway: issuer requires inline mandate", { url: mandate.url })
-      await open(mandate.url)
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: "Payment authorization required. A browser window has been opened for you to approve the payment. Please retry after authorizing.",
-          },
-        ],
-        isError: true,
-      }
-    }
-
-    if (tokenResult.isError) {
-      log.error("gateway: token issuer returned error", {
-        server: provider.server,
-        tool: issuerTool,
-        detail: resultText(tokenResult),
-      })
-      return tokenResult
-    }
-
-    token = extractTokenFromResponse(tokenResult)
-    if (!token) {
-      // The issuer may report failures (e.g. insufficient balance) in plain
-      // content text with isError unset, so surface that text rather than a
-      // generic "failed to extract" message.
-      const detail = resultText(tokenResult)
-      log.error("gateway: could not extract token from issuer response", { server: provider.server, detail })
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: detail
-              ? `Gateway error: the payment issuer did not return a token. Issuer said: ${detail}`
-              : "Gateway error: failed to extract payment token from issuer.",
-          },
-        ],
-        isError: true,
-      }
-    }
-
-    setCachedToken(matchedType, payment.total, payment.currency, token)
-    log.info("gateway: acquired and cached token", { server: provider.server })
-  } else {
-    log.info("gateway: using cached token", { settlementType: matchedType })
+    return tokenResult
   }
+
+  const token = extractTokenFromResponse(tokenResult)
+  if (!token) {
+    // The issuer may report failures (e.g. insufficient balance) in plain
+    // content text with isError unset, so surface that text rather than a
+    // generic "failed to extract" message.
+    const detail = resultText(tokenResult)
+    log.error("gateway: could not extract token from issuer response", { server: provider.server, detail })
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: detail
+            ? `Gateway error: the payment issuer did not return a token. Issuer said: ${detail}`
+            : "Gateway error: failed to extract payment token from issuer.",
+        },
+      ],
+      isError: true,
+    }
+  }
+
+  log.info("gateway: acquired token", { server: provider.server })
 
   // Build the payment _meta for the merchant's pay tool
   const paymentMeta: Record<string, unknown> = {
