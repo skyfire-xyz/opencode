@@ -117,15 +117,16 @@ mcpTest.instance(
 )
 
 mcpTest.instance(
-  "connect({ kyaConsent: true }) proceeds to mint (fails clearly when no issuer is configured)",
+  "connect({ kyaConsent: true }) tries KYA first, then falls back to default OAuth (needs_auth) when no issuer is configured",
   () =>
     MCP.Service.use((mcp) =>
       Effect.gen(function* () {
         yield* mcp.connect("kya-server", { kyaConsent: true })
         const status = yield* mcp.status()
-        const entry = status["kya-server"]
-        expect(entry?.status).toBe("failed")
-        if (entry?.status === "failed") expect(entry.error).toContain("issuer")
+        // KYA is advertised and consent was given, but no issuer is configured so minting
+        // can't complete. Rather than failing, it falls back to opencode's default OAuth,
+        // which on the auto-connect path surfaces as needs_auth (run `opencode mcp auth`).
+        expect(status["kya-server"]?.status).toBe("needs_auth")
       }),
     ),
   { config: kyaConfig },

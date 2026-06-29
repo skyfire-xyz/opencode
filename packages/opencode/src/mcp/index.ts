@@ -232,11 +232,11 @@ async function detectKyaSupport(name: string, serverUrl: string): Promise<KyaSup
   if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
 
   log.info("[detectKyaSupport] fetching AS metadata", { name, authServer })
-  const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+  const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
     headers: { accept: "application/json" },
   })
-  const asJson = rfc8414.ok
-    ? await rfc8414.json()
+  const asJson = asMetadataRes.ok
+    ? await asMetadataRes.json()
     : await fetch(new URL("/.well-known/openid-configuration", authServer), {
         headers: { accept: "application/json" },
       }).then((r) => (r.ok ? r.json() : undefined))
@@ -370,10 +370,10 @@ function trySilentKya(args: {
       try: async () => {
         const authServer = kyaSupport.authServer
         if (!authServer) return undefined
-        const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+        const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
           headers: { accept: "application/json" },
         })
-        return rfc8414.ok ? ((await rfc8414.json()) as any) : undefined
+        return asMetadataRes.ok ? ((await asMetadataRes.json()) as any) : undefined
       },
       catch: () => undefined,
     })
@@ -731,11 +731,17 @@ export const layer = Layer.effect(
             redirectUri: oauthConfig?.redirectUri,
           },
           {
+            // Fires only for non-KYA servers: the provider suppresses DCR + redirect
+            // for KYA servers, but ordinary OAuth servers still reach this callback.
             onRedirect: async (url) => {
               log.info("[connectRemote] oauth redirect requested", { key, url: url.toString() })
             },
           },
           auth,
+          // allowInteractive = false: on the auto-connect / live transport, suppress
+          // interactive OAuth (DCR + browser) *only for KYA servers* so a 401 surfaces
+          // to our KYA handlers. Non-KYA servers still get standard interactive OAuth.
+          false,
         )
       }
 
@@ -842,10 +848,16 @@ export const layer = Layer.effect(
                       )
                     }
 
-                    // Consent given but minting failed — surface a clear failure
-                    // rather than silently falling back to interactive OAuth.
-                    lastStatus = { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
-                    return undefined
+                    // Consent given but KYA minting couldn't complete (e.g. no issuer
+                    // configured, or a mint / token-exchange error). KYA is the priority
+                    // when advertised, but it falls back to opencode's default OAuth:
+                    // don't return here — let control fall through to the needs_auth path
+                    // below, which stores the pending transport and prompts the user to run
+                    // `opencode mcp auth <key>` (the interactive DCR + browser flow).
+                    log.warn("[connectRemote] KYA minting failed; falling back to default OAuth", {
+                      key,
+                      error: minted.error ?? "Silent KYA token minting failed",
+                    })
                   }
                 }
 
@@ -1381,6 +1393,9 @@ export const layer = Layer.effect(
           },
         },
         auth,
+        // allowInteractive = true: this is the explicit interactive flow, so DCR and
+        // the authorization redirect are expected.
+        true,
       )
 
       const transport = new StreamableHTTPClientTransport(url, { authProvider })
