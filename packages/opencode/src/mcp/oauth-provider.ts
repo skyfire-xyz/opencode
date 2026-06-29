@@ -29,6 +29,13 @@ export interface McpOAuthCallbacks {
 }
 
 export class McpOAuthProvider implements OAuthClientProvider {
+  // The full transport URL (may include an MCP path such as `/mcp`). Kept distinct
+  // from `serverUrl`, which is normalized to the origin below for OAuth discovery and
+  // token-store keying. KYA detection must probe this endpoint, not the origin root,
+  // so a server that advertises its `resource_metadata` only via `WWW-Authenticate`
+  // on the MCP endpoint is detected correctly.
+  private readonly mcpUrl: string
+
   constructor(
     private mcpName: string,
     private serverUrl: string,
@@ -37,6 +44,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
     private auth: McpAuth.Interface,
     private allowInteractive = false,
   ) {
+    this.mcpUrl = this.serverUrl
     try {
       const parsed = new URL(this.serverUrl)
       this.serverUrl = parsed.origin
@@ -48,7 +56,7 @@ export class McpOAuthProvider implements OAuthClientProvider {
   private kyaAdvertised?: Promise<boolean>
 
   private isKyaServer(): Promise<boolean> {
-    return (this.kyaAdvertised ??= serverAdvertisesKya(this.serverUrl))
+    return (this.kyaAdvertised ??= serverAdvertisesKya(this.mcpUrl))
   }
 
   /**
@@ -63,47 +71,6 @@ export class McpOAuthProvider implements OAuthClientProvider {
    */
   private async shouldDeferToKya(): Promise<boolean> {
     return !this.allowInteractive && (await this.isKyaServer())
-  }
-
-  /**
-   * The MCP SDK's StreamableHTTP transport will try OAuth discovery against the
-   * MCP origin by requesting `/.well-known/oauth-authorization-server`.
-   *
-   * Our KYA mock (and some real deployments) host OAuth metadata on a separate
-   * auth origin and advertise it via `WWW-Authenticate: ... authorization-uri="..."`
-   * on 401 responses from the MCP endpoint.
-   *
-   * To avoid a confusing "Invalid OAuth error response" when the MCP origin
-   * correctly returns plain-text 404 for `/.well-known/*`, we proactively trigger
-   * a 401 against the MCP endpoint and let the SDK parse the advertised metadata.
-   */
-  private async ensureDiscoveryViaWwwAuthenticate(): Promise<void> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 2_000)
-
-    try {
-      const url = new URL(this.serverUrl)
-      url.pathname = "/mcp"
-      url.search = ""
-      url.hash = ""
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
-        signal: controller.signal,
-      })
-
-      if (res.status === 401) {
-        // Throwing the SDK's UnauthorizedError is enough for it to parse
-        // `WWW-Authenticate` and continue the OAuth discovery flow.
-        throw new UnauthorizedError("MCP server requires authentication")
-      }
-    } catch {
-      // This is a best-effort preflight; ignore failures and let the SDK do its normal flow.
-    } finally {
-      clearTimeout(timeout)
-    }
   }
 
   get redirectUrl(): string {
@@ -151,8 +118,6 @@ export class McpOAuthProvider implements OAuthClientProvider {
     }
 
     if (await this.isKyaServer()) {
-      await this.ensureDiscoveryViaWwwAuthenticate()
-
       if (!this.allowInteractive) {
         log.warn("[clientInformation] KYA server: suppressing Dynamic Client Registration; routing 401 to KYA", {
           mcpName: this.mcpName,

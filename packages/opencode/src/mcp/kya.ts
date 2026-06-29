@@ -88,7 +88,10 @@ export async function probeResourceMetadataUrl(serverUrl: string): Promise<strin
     if (res.status !== 401) return undefined
     const wwwAuth = res.headers.get("www-authenticate")
     const m = wwwAuth?.match(/resource_metadata="?([^",\s]+)"?/i)
-    return m?.[1]
+    if (!m) return undefined
+    // `resource_metadata` may be a relative URI reference; resolve it against the
+    // probed URL so callers can fetch it directly.
+    return new URL(m[1], serverUrl).toString()
   } catch (error) {
     log.error("[probeResourceMetadataUrl] probe failed; falling back to well-known location", {
       serverUrl,
