@@ -112,6 +112,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       params: { name: string }
       query: { consentId: string; approved: boolean }
     }) {
+      const status = yield* mcp.status()
+      if (!(ctx.params.name in status))
+        return yield* new McpServerNotFoundError({
+          name: ctx.params.name,
+          message: `MCP server not found: ${ctx.params.name}`,
+        })
       const result = yield* mcp.payConsent(ctx.query.consentId, ctx.query.approved)
       return result.resolved
     })
