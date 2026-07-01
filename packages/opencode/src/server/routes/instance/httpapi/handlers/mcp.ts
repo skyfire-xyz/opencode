@@ -91,7 +91,11 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return true
     })
 
-    const kyaAuthorize = Effect.fn("McpHttpApi.kyaAuthorize")(function* (ctx: { params: { name: string } }) {
+    const kyaAuthorize = Effect.fn("McpHttpApi.kyaAuthorize")(function* (ctx: {
+      params: { name: string }
+      query: { consentGiven: boolean }
+    }) {
+      if (!ctx.query.consentGiven) return yield* new HttpApiError.BadRequest({})
       const result = yield* mcp
         .kyaAuthorize(ctx.params.name)
         .pipe(

@@ -2209,6 +2209,7 @@ export class Mcp extends HeyApiClient {
       name: string
       directory?: string
       workspace?: string
+      consentGiven: "true" | "false"
     },
     options?: Options<never, ThrowOnError>,
   ) {
@@ -2220,6 +2221,7 @@ export class Mcp extends HeyApiClient {
             { in: "path", key: "name" },
             { in: "query", key: "directory" },
             { in: "query", key: "workspace" },
+            { in: "query", key: "consentGiven" },
           ],
         },
       ],

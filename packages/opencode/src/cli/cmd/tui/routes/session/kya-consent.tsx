@@ -34,7 +34,7 @@ export function useKyaConsentDialog() {
       // The X, Esc, or Cancel mints nothing.
       if (ok !== true) return
       try {
-        const res = await sdk.client.mcp.kyaAuthorize({ name, workspace: metadata.workspace })
+        const res = await sdk.client.mcp.kyaAuthorize({ name, workspace: metadata.workspace, consentGiven: "true" })
         // Minting can fail as a `failed` status rather than a thrown error
         // (e.g. issuer not enabled); kyaAuthorize returns false in that case.
         if (res.data !== true) {

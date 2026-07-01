@@ -21,6 +21,14 @@ const ConnectQuery = Schema.Struct({
   kyaConsent: Schema.optional(QueryBoolean),
 })
 
+// kyaAuthorize requires the caller to pass consentGiven=true, mirroring the
+// kyaConsent flag on connect. This prevents the endpoint from being used to
+// silently mint tokens without explicit user confirmation.
+const KyaAuthorizeQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  consentGiven: QueryBoolean,
+})
+
 // payConsent resolves a pending payment-consent prompt: the user's Yes/No from
 // the order-total dialog the gateway raised before minting a pay token.
 const PayConsentQuery = Schema.Struct({
@@ -151,7 +159,7 @@ export const McpApi = HttpApi.make("mcp")
         ),
         HttpApiEndpoint.post("kyaAuthorize", McpPaths.kyaAuthorize, {
           params: { name: Schema.String },
-          query: WorkspaceRoutingQuery,
+          query: KyaAuthorizeQuery,
           success: described(Schema.Boolean, "Skyfire KYA token minted for the server"),
           error: McpServerNotFoundError,
         }).annotateMerge(

@@ -30,7 +30,7 @@ export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "aut
   const confirm = useMutation(() => ({
     mutationFn: () =>
       props.mode === "authorize"
-        ? sdk.client.mcp.kyaAuthorize({ name: props.name })
+        ? sdk.client.mcp.kyaAuthorize({ name: props.name, consentGiven: "true" })
         : sdk.client.mcp.connect({ name: props.name, kyaConsent: "true" }),
     onSuccess: async () => {
       dialog.close()
