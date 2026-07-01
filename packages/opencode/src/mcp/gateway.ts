@@ -223,6 +223,10 @@ export function buildCapabilityMap(mcpConfig: Record<string, ConfigMCP.Info | { 
     // candidate up front (mirrors the `enabled === false` guard in `create`).
     if (info.enabled === false) continue
     if (!("capabilities" in info) || !info.capabilities) continue
+    // Legacy Remote configs allow capabilities as a plain string[] (URI list).
+    // That form has no tool mapping, so it produces no capability map entries.
+    // It is handled separately by hasKyaCapability/kyaCapabilityTool in kya.ts.
+    if (Array.isArray(info.capabilities)) continue
     // Derive the provider's issuer identity from its server url origin. Local
     // providers have no url, so they carry no issuer constraint.
     let issuer: string | undefined
