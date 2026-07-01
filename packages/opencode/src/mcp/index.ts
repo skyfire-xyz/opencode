@@ -38,6 +38,8 @@ import {
   kyaIssuerFromConfig,
   extractJwtFromText,
   probeResourceMetadataUrl,
+  KYA_GRANT_PROFILE,
+  JWT_BEARER_GRANT_TYPE,
 } from "./kya"
 import { Flag } from "@opencode-ai/core/flag/flag"
 
@@ -184,7 +186,7 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
   return arr
     .filter((v): v is string => typeof v === "string")
     .flatMap((value) => {
-      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === KYA_GRANT_PROFILE) return ["kya", value]
       if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
       return [value]
     })
@@ -413,7 +415,7 @@ function trySilentKya(args: {
     log.info("[trySilentKya] exchanging assertion for access token", { name: args.name, tokenEndpoint })
 
     const form = new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      grant_type: JWT_BEARER_GRANT_TYPE,
       assertion,
     })
 

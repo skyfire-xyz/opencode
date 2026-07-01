@@ -8,7 +8,7 @@ import type {
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
-import { serverAdvertisesKya } from "./kya"
+import { serverAdvertisesKya, KYA_GRANT_PROFILE } from "./kya"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "mcp.oauth" })
@@ -284,7 +284,7 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
   return arr
     .filter((v): v is string => typeof v === "string")
     .flatMap((value) => {
-      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === KYA_GRANT_PROFILE) return ["kya", value]
       if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
       return [value]
     })

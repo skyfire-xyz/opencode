@@ -140,6 +140,9 @@ export async function discoverResourceAuthServer(
 /** Grant-profile URN a Resource AS advertises (RFC 8414 metadata) to offer KYA. */
 export const KYA_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:kya"
 
+/** Grant-type URN for JWT bearer assertion exchange (RFC 7523). */
+export const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
 /** Whether AS/OpenID metadata advertises the KYA grant profile. */
 export function metadataAdvertisesKya(metadata: unknown): boolean {
   if (!metadata || typeof metadata !== "object") return false
@@ -199,7 +202,7 @@ export async function exchangeAssertionForAccessToken(
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      grant_type: JWT_BEARER_GRANT_TYPE,
       assertion,
     }),
   })
