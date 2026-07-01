@@ -30,7 +30,7 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventMcpKyaConsentRequired
-  | EventMcpPayConsentRequired1
+  | EventMcpPayConsentRequired
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
@@ -2721,12 +2721,12 @@ export type EventMcpPayConsentRequired = {
   properties: {
     name: string
     consentId: string
-    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    total: number | "NaN" | "Infinity" | "-Infinity"
     currency: string
     settlementType: string
-    subTotal?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    taxes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
-    shippingAndHandling?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    subTotal?: number | "NaN" | "Infinity" | "-Infinity"
+    taxes?: number | "NaN" | "Infinity" | "-Infinity"
+    shippingAndHandling?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -3774,21 +3774,6 @@ export type EventTuiToastShow1 = {
     message: string
     variant: "info" | "success" | "warning" | "error"
     duration?: number
-  }
-}
-
-export type EventMcpPayConsentRequired1 = {
-  id: string
-  type: "mcp.pay.consent.required"
-  properties: {
-    name: string
-    consentId: string
-    total: number | "NaN" | "Infinity" | "-Infinity"
-    currency: string
-    settlementType: string
-    subTotal?: number | "NaN" | "Infinity" | "-Infinity"
-    taxes?: number | "NaN" | "Infinity" | "-Infinity"
-    shippingAndHandling?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
