@@ -5370,9 +5370,10 @@ export type McpKyaAuthorizeData = {
   path: {
     name: string
   }
-  query?: {
+  query: {
     directory?: string
     workspace?: string
+    consentGiven: "true" | "false"
   }
   url: "/mcp/{name}/kya-authorize"
 }
