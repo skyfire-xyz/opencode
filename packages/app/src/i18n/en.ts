@@ -305,7 +305,7 @@ export const dict = {
   "dialog.kyaConsent.no": "No",
 
   "dialog.payConsent.title": "Approve payment to {{name}}?",
-  "dialog.payConsent.description": "Confirm to mint a payment token and complete this purchase.",
+  "dialog.payConsent.description": "Confirm to create a payment token and complete this purchase.",
   "dialog.payConsent.yes": "Pay",
   "dialog.payConsent.no": "Cancel",
 
