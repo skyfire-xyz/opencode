@@ -28,6 +28,7 @@ const testMcpHandlers = HttpApiBuilder.group(TestHttpApi, "mcp", (handlers) =>
       .handle("authRemove", () => Effect.die("unexpected MCP authRemove"))
       .handle("connect", () => Effect.die("unexpected MCP connect"))
       .handle("kyaAuthorize", () => Effect.die("unexpected MCP kyaAuthorize"))
+      .handle("payConsent", () => Effect.die("unexpected MCP payConsent"))
       .handle("disconnect", () => Effect.die("unexpected MCP disconnect")),
   ),
 )

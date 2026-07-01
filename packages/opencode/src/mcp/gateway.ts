@@ -272,8 +272,23 @@ export async function executeWithGateway(input: {
   clients: Record<string, MCPClient>
   capabilityMap: CapabilityMap
   timeout?: number
+  /**
+   * Consent gate invoked once a payment signal is caught and a provider/seller
+   * are resolved, immediately before a pay token is minted. Returns whether the
+   * user approved the charge; a `false` result aborts without minting. When
+   * unset, payment proceeds without a prompt (e.g. non-interactive contexts).
+   */
+  requestPayConsent?: (info: {
+    total: number
+    currency: string
+    subTotal?: number
+    taxes?: number
+    shippingAndHandling?: number
+    settlementType: string
+    settlementTypes: string[]
+  }) => Promise<boolean>
 }): Promise<CallToolResult> {
-  const { toolName, args, client, clients, capabilityMap, timeout } = input
+  const { toolName, args, client, clients, capabilityMap, timeout, requestPayConsent } = input
 
   log.info("gateway: executing tool", { toolName })
 
@@ -392,6 +407,33 @@ export async function executeWithGateway(input: {
         },
       ],
       isError: true,
+    }
+  }
+
+  // Human-in-the-loop consent: the order total is now known and payment can
+  // proceed, so confirm the charge before minting. Declining (or timing out)
+  // aborts without minting a token.
+  if (requestPayConsent) {
+    const approved = await requestPayConsent({
+      total: payment.total,
+      currency: payment.currency,
+      subTotal: payment.subTotal,
+      taxes: payment.taxes,
+      shippingAndHandling: payment.shippingAndHandling,
+      settlementType: matchedType,
+      settlementTypes: payment.settlementTypes,
+    })
+    if (!approved) {
+      log.info("gateway: payment not approved by user", { toolName, total: payment.total })
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "Payment was not approved by the user. No payment token was minted.",
+          },
+        ],
+        isError: true,
+      }
     }
   }
 

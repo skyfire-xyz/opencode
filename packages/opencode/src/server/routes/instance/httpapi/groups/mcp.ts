@@ -21,6 +21,14 @@ const ConnectQuery = Schema.Struct({
   kyaConsent: Schema.optional(QueryBoolean),
 })
 
+// payConsent resolves a pending payment-consent prompt: the user's Yes/No from
+// the order-total dialog the gateway raised before minting a pay token.
+const PayConsentQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  consentId: Schema.String,
+  approved: QueryBoolean,
+})
+
 export const AddPayload = Schema.Struct({
   name: Schema.String,
   config: ConfigMCP.Info,
@@ -49,6 +57,7 @@ export const McpPaths = {
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
   kyaAuthorize: "/mcp/:name/kya-authorize",
+  payConsent: "/mcp/:name/pay-consent",
   disconnect: "/mcp/:name/disconnect",
 } as const
 
@@ -150,6 +159,18 @@ export const McpApi = HttpApi.make("mcp")
             identifier: "mcp.kyaAuthorize",
             description:
               "Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.",
+          }),
+        ),
+        HttpApiEndpoint.post("payConsent", McpPaths.payConsent, {
+          params: { name: Schema.String },
+          query: PayConsentQuery,
+          success: described(Schema.Boolean, "Payment consent recorded (resolved a pending prompt)"),
+          error: McpServerNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.payConsent",
+            description:
+              "Approve or decline a pending payment-consent prompt raised by the gateway before minting a pay token. Returns true when a pending prompt was resolved.",
           }),
         ),
         HttpApiEndpoint.post("disconnect", McpPaths.disconnect, {

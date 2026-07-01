@@ -104,6 +104,14 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return result.status === "connected"
     })
 
+    const payConsent = Effect.fn("McpHttpApi.payConsent")(function* (ctx: {
+      params: { name: string }
+      query: { consentId: string; approved: boolean }
+    }) {
+      const result = yield* mcp.payConsent(ctx.query.consentId, ctx.query.approved)
+      return result.resolved
+    })
+
     const disconnect = Effect.fn("McpHttpApi.disconnect")(function* (ctx: { params: { name: string } }) {
       yield* mcp
         .disconnect(ctx.params.name)
@@ -126,6 +134,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       .handle("authRemove", authRemove)
       .handle("connect", connect)
       .handle("kyaAuthorize", kyaAuthorize)
+      .handle("payConsent", payConsent)
       .handle("disconnect", disconnect)
   }),
 )

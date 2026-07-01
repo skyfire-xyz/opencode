@@ -304,6 +304,11 @@ export const dict = {
   "dialog.kyaConsent.yes": "Yes",
   "dialog.kyaConsent.no": "No",
 
+  "dialog.payConsent.title": "Approve payment to {{name}}?",
+  "dialog.payConsent.description": "Confirm to mint a payment token and complete this purchase.",
+  "dialog.payConsent.yes": "Pay",
+  "dialog.payConsent.no": "Cancel",
+
   "dialog.lsp.empty": "LSPs auto-detected from file types",
   "dialog.plugins.empty": "Plugins configured in opencode.json",
 

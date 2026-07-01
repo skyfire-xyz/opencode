@@ -101,6 +101,8 @@ import type {
   McpKyaAuthorizeErrors,
   McpKyaAuthorizeResponses,
   McpLocalConfig,
+  McpPayConsentErrors,
+  McpPayConsentResponses,
   McpRemoteConfig,
   McpStatusErrors,
   McpStatusResponses,
@@ -2224,6 +2226,40 @@ export class Mcp extends HeyApiClient {
     )
     return (options?.client ?? this.client).post<McpKyaAuthorizeResponses, McpKyaAuthorizeErrors, ThrowOnError>({
       url: "/mcp/{name}/kya-authorize",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Approve or decline a pending payment-consent prompt raised by the gateway before minting a pay token. Returns true when a pending prompt was resolved.
+   */
+  public payConsent<ThrowOnError extends boolean = false>(
+    parameters: {
+      name: string
+      directory?: string
+      workspace?: string
+      consentId: string
+      approved: "true" | "false"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "name" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "consentId" },
+            { in: "query", key: "approved" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<McpPayConsentResponses, McpPayConsentErrors, ThrowOnError>({
+      url: "/mcp/{name}/pay-consent",
       ...options,
       ...params,
     })

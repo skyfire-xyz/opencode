@@ -48,6 +48,9 @@ const DEFAULT_TIMEOUT = 30_000
 // sign-in (and a fresh token to be stored) before giving up and returning a prompt.
 const KYA_CONSENT_WAIT_MS = 120_000
 const KYA_CONSENT_POLL_MS = 1_500
+// How long a payment gateway call waits inline for the user to approve (or
+// decline) a charge in the consent dialog before giving up and aborting the mint.
+const PAY_CONSENT_WAIT_MS = 120_000
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
@@ -83,6 +86,23 @@ export const KyaConsentRequired = BusEvent.define(
   "mcp.kya.consent.required",
   Schema.Struct({
     name: Schema.String,
+  }),
+)
+
+// Emitted when the payment gateway has caught a payment signal and is about to
+// mint a pay token. The UI reacts by auto-opening a consent dialog showing the
+// order total breakdown; approving/declining resolves via MCP.payConsent.
+export const PayConsentRequired = BusEvent.define(
+  "mcp.pay.consent.required",
+  Schema.Struct({
+    name: Schema.String,
+    consentId: Schema.String,
+    total: Schema.Number,
+    currency: Schema.String,
+    settlementType: Schema.String,
+    subTotal: Schema.optional(Schema.Number),
+    taxes: Schema.optional(Schema.Number),
+    shippingAndHandling: Schema.optional(Schema.Number),
   }),
 )
 
@@ -515,6 +535,15 @@ function convertMcpTool(
   timeout?: number,
   gateway?: { clients: Record<string, MCPClient>; capabilityMap: CapabilityMap },
   kya?: KyaToolHook,
+  requestPayConsent?: (info: {
+    total: number
+    currency: string
+    subTotal?: number
+    taxes?: number
+    shippingAndHandling?: number
+    settlementType: string
+    settlementTypes: string[]
+  }) => Promise<boolean>,
 ): Tool {
   const inputSchema = mcpTool.inputSchema
 
@@ -539,6 +568,7 @@ function convertMcpTool(
               clients: gateway.clients,
               capabilityMap: gateway.capabilityMap,
               timeout,
+              requestPayConsent,
             })
           : client.callTool(
               { name: mcpTool.name, arguments: (args || {}) as Record<string, unknown> },
@@ -649,6 +679,7 @@ export interface Interface {
   readonly kyaAuthorize: (
     name: string,
   ) => Effect.Effect<{ status: "connected" | "failed"; error?: string }, NotFoundError>
+  readonly payConsent: (consentId: string, approved: boolean) => Effect.Effect<{ resolved: boolean }>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -680,6 +711,13 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const bus = yield* Bus.Service
+
+    // Pending payment-consent prompts keyed by consentId. The gateway registers
+    // a resolver before publishing PayConsentRequired and waits on it; the UI's
+    // payConsent call resolves it. Lives in the (per-instance) service closure
+    // so both the tool-execute hook and the payConsent handler share it, and
+    // workspace routing keeps the HTTP call on this same instance.
+    const pendingPayConsents = new Map<string, (approved: boolean) => void>()
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -1181,6 +1219,20 @@ export const layer = Layer.effect(
       return { status: "connected" as const }
     })
 
+    // Resolve a pending payment-consent prompt (the user clicked Yes/No in the
+    // consent dialog). The waiting gateway call unblocks and either mints or
+    // aborts. Returns resolved:false when the consentId is unknown (e.g. the
+    // prompt already timed out).
+    const payConsent = Effect.fn("MCP.payConsent")(function* (consentId: string, approved: boolean) {
+      const resolve = pendingPayConsents.get(consentId)
+      if (!resolve) {
+        log.info("[payConsent] no pending consent for id", { consentId })
+        return { resolved: false }
+      }
+      resolve(approved)
+      return { resolved: true }
+    })
+
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
       yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
@@ -1264,6 +1316,54 @@ export const layer = Layer.effect(
                 }
               : undefined
 
+            // When a gateway is active, gate pay-token minting behind a consent
+            // dialog. The gateway calls this once it has caught a payment signal
+            // and resolved a provider; we publish the order total and block this
+            // tool call until the user approves (or it times out → decline).
+            const requestPayConsent = gateway
+              ? async (info: {
+                  total: number
+                  currency: string
+                  subTotal?: number
+                  taxes?: number
+                  shippingAndHandling?: number
+                  settlementType: string
+                  settlementTypes: string[]
+                }) =>
+                  new Promise<boolean>((resolve) => {
+                    const consentId = crypto.randomUUID()
+                    let done = false
+                    const finish = (approved: boolean) => {
+                      if (done) return
+                      done = true
+                      clearTimeout(timer)
+                      pendingPayConsents.delete(consentId)
+                      resolve(approved)
+                    }
+                    const timer = setTimeout(() => {
+                      log.info("[pay] consent not approved within wait window", { name: clientName })
+                      finish(false)
+                    }, PAY_CONSENT_WAIT_MS)
+                    pendingPayConsents.set(consentId, finish)
+                    void bridge
+                      .promise(
+                        bus
+                          .publish(PayConsentRequired, {
+                            name: clientName,
+                            consentId,
+                            total: info.total,
+                            currency: info.currency,
+                            settlementType: info.settlementType,
+                            subTotal: info.subTotal,
+                            taxes: info.taxes,
+                            shippingAndHandling: info.shippingAndHandling,
+                          })
+                          .pipe(Effect.ignore),
+                      )
+                      .catch(() => finish(false))
+                  })
+              : undefined
+
             for (const mcpTool of listed) {
               result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
                 mcpTool,
@@ -1271,6 +1371,7 @@ export const layer = Layer.effect(
                 timeout,
                 gateway,
                 kya,
+                requestPayConsent,
               )
             }
           }),
@@ -1537,6 +1638,7 @@ export const layer = Layer.effect(
       add,
       connect,
       kyaAuthorize,
+      payConsent,
       disconnect,
       getPrompt,
       readResource,

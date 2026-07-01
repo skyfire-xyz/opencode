@@ -30,6 +30,7 @@ export type Event =
   | EventMcpToolsChanged
   | EventMcpBrowserOpenFailed
   | EventMcpKyaConsentRequired
+  | EventMcpPayConsentRequired1
   | EventCommandExecuted
   | EventProjectUpdated
   | EventSessionCompacted
@@ -832,6 +833,7 @@ export type GlobalEvent = {
     | EventMcpToolsChanged
     | EventMcpBrowserOpenFailed
     | EventMcpKyaConsentRequired
+    | EventMcpPayConsentRequired
     | EventCommandExecuted
     | EventProjectUpdated
     | EventSessionCompacted
@@ -2713,6 +2715,21 @@ export type EventMcpKyaConsentRequired = {
   }
 }
 
+export type EventMcpPayConsentRequired = {
+  id: string
+  type: "mcp.pay.consent.required"
+  properties: {
+    name: string
+    consentId: string
+    total: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    currency: string
+    settlementType: string
+    subTotal?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    taxes?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    shippingAndHandling?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
 export type EventCommandExecuted = {
   id: string
   type: "command.executed"
@@ -3757,6 +3774,21 @@ export type EventTuiToastShow1 = {
     message: string
     variant: "info" | "success" | "warning" | "error"
     duration?: number
+  }
+}
+
+export type EventMcpPayConsentRequired1 = {
+  id: string
+  type: "mcp.pay.consent.required"
+  properties: {
+    name: string
+    consentId: string
+    total: number | "NaN" | "Infinity" | "-Infinity"
+    currency: string
+    settlementType: string
+    subTotal?: number | "NaN" | "Infinity" | "-Infinity"
+    taxes?: number | "NaN" | "Infinity" | "-Infinity"
+    shippingAndHandling?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -5381,6 +5413,42 @@ export type McpKyaAuthorizeResponses = {
 }
 
 export type McpKyaAuthorizeResponse = McpKyaAuthorizeResponses[keyof McpKyaAuthorizeResponses]
+
+export type McpPayConsentData = {
+  body?: never
+  path: {
+    name: string
+  }
+  query: {
+    directory?: string
+    workspace?: string
+    consentId: string
+    approved: "true" | "false"
+  }
+  url: "/mcp/{name}/pay-consent"
+}
+
+export type McpPayConsentErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * McpServerNotFoundError
+   */
+  404: McpServerNotFoundError
+}
+
+export type McpPayConsentError = McpPayConsentErrors[keyof McpPayConsentErrors]
+
+export type McpPayConsentResponses = {
+  /**
+   * Payment consent recorded (resolved a pending prompt)
+   */
+  200: boolean
+}
+
+export type McpPayConsentResponse = McpPayConsentResponses[keyof McpPayConsentResponses]
 
 export type McpDisconnectData = {
   body?: never
