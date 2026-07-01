@@ -369,6 +369,22 @@ const scenarios: Scenario[] = [
     .mutating()
     .at((ctx) => ({ path: route("/mcp/{name}/disconnect", { name: "httpapi-missing" }), headers: ctx.headers() }))
     .json(404, object, "status"),
+  http.protected
+    .post("/mcp/{name}/kya-authorize", "mcp.kyaAuthorize")
+    .mutating()
+    .at((ctx) => ({
+      path: `${route("/mcp/{name}/kya-authorize", { name: "httpapi-missing" })}?consentGiven=true`,
+      headers: ctx.headers(),
+    }))
+    .json(404, object, "status"),
+  http.protected
+    .post("/mcp/{name}/pay-consent", "mcp.payConsent")
+    .mutating()
+    .at((ctx) => ({
+      path: `${route("/mcp/{name}/pay-consent", { name: "httpapi-missing" })}?consentId=test-consent-id&approved=true`,
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => check(body === false, "unknown consentId resolves to false")),
   http.protected.get("/pty/shells", "pty.shells").json(200, array),
   http.protected.get("/pty", "pty.list").json(200, array),
   http.protected
