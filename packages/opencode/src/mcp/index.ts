@@ -293,7 +293,7 @@ function trySilentKya(args: {
   // silently degrading to interactive OAuth.
   let advertised = false
   return Effect.gen(function* () {
-    log.info("===== KYA auth flow BEGIN =====", {
+    log.info("[trySilentKya] KYA auth flow BEGIN", {
       name: args.name,
       url: args.serverUrl,
       hasSkyfire: !!args.issuer,
@@ -472,7 +472,7 @@ function trySilentKya(args: {
       )
     }),
     Effect.tap((result) =>
-      Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result })),
+      Effect.sync(() => log.info("[trySilentKya] KYA auth flow END", { name: args.name, ...result })),
     ),
   )
 }
@@ -577,10 +577,10 @@ function convertMcpTool(
               CallToolResultSchema,
               { resetTimeoutOnProgress: true, timeout },
             )
-      log.info("tool call REQUEST", { tool: mcpTool.name, args })
+      log.info("[convertMcpTool] tool call REQUEST", { tool: mcpTool.name, args })
       try {
         const result = await run()
-        log.info("tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
+        log.info("[convertMcpTool] tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
         return result
       } catch (error) {
         // A 401 from a KYA-advertising server is recoverable: the hook prompts the
