@@ -4,6 +4,7 @@ import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { errorMessage } from "@/util/error"
+import { titleCase } from "../../util/title-case"
 
 export function usePayConsentDialog() {
   const event = useEvent()
@@ -15,7 +16,7 @@ export function usePayConsentDialog() {
     if (dialog.stack.length > 0) return
 
     const p = evt.properties
-    const merchant = p.name.replace(/(^|[-_\s])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())
+    const merchant = titleCase(p.name)
 
     void DialogConfirm.show(dialog, `Approve payment to ${merchant}?`, "", "Cancel").then(async (ok) => {
       // Esc / click-away (undefined) does nothing — the prompt times out

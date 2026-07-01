@@ -4,6 +4,7 @@ import { useDialog } from "../../ui/dialog"
 import { useToast } from "../../ui/toast"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
 import { errorMessage } from "@/util/error"
+import { titleCase } from "../../util/title-case"
 
 // TUI counterpart of packages/app/src/pages/session/kya-consent-dialogs.tsx.
 // Auto-opens the "Sign in with Skyfire KYA" prompt when a gated tool call on a
@@ -24,7 +25,7 @@ export function useKyaConsentDialog() {
     const name = evt.properties.name
     // Title-case the merchant key for display, preserving separators and any
     // uppercase the server key already carries: "xyz-clothiers" -> "Xyz-Clothiers".
-    const merchant = name.replace(/(^|[-_\s])([a-z])/g, (_, sep, ch) => sep + ch.toUpperCase())
+    const merchant = titleCase(name)
 
     void DialogConfirm.show(
       dialog,

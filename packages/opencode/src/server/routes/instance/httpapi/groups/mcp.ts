@@ -161,7 +161,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: KyaAuthorizeQuery,
           success: described(Schema.Boolean, "Skyfire KYA token minted for the server"),
-          error: McpServerNotFoundError,
+          error: [McpServerNotFoundError, HttpApiError.BadRequest],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.kyaAuthorize",
