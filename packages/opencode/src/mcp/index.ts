@@ -442,9 +442,8 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
-
     let expiresAt: number | undefined =
-    typeof tokenJson.expires_in === "number" ? Date.now() / 1000 + tokenJson.expires_in : undefined
+      typeof tokenJson.expires_in === "number" ? Date.now() / 1000 + tokenJson.expires_in : undefined
     if (expiresAt === undefined) {
       try {
         const exp = decodeJwt(accessToken).exp
