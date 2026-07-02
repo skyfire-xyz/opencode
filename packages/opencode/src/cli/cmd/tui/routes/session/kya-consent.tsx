@@ -10,7 +10,8 @@ import { titleCase } from "../../util/title-case"
 // Auto-opens the "Sign in with Skyfire KYA" prompt when a gated tool call on a
 // KYA-advertising MCP server returns 401 (server emits mcp.kya.consent.required).
 // Confirming mints a token via kyaAuthorize without reconnecting; the agent then
-// retries the tool.
+// retries the tool. Cancelling sends consentGiven=false so the waiting tool call
+// unblocks immediately instead of timing out.
 export function useKyaConsentDialog() {
   const event = useEvent()
   const sdk = useSDK()
@@ -32,8 +33,12 @@ export function useKyaConsentDialog() {
       `Sign in with Skyfire KYA — ${merchant}`,
       `Authorize a Skyfire KYA token for ${merchant}?`,
     ).then(async (ok) => {
-      // The X, Esc, or Cancel mints nothing.
-      if (ok !== true) return
+      // The X, Esc, or Cancel mints nothing — but it should unblock the tool
+      // call waiting on this consent, so tell the server the user declined.
+      if (ok !== true) {
+        void sdk.client.mcp.kyaAuthorize({ name, workspace: metadata.workspace, consentGiven: "false" }).catch(() => {})
+        return
+      }
       try {
         const res = await sdk.client.mcp.kyaAuthorize({ name, workspace: metadata.workspace, consentGiven: "true" })
         // Minting can fail as a `failed` status rather than a thrown error
