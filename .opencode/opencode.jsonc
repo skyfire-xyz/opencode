@@ -3,14 +3,14 @@
   "mcp": {
     // Protected merchant — connecting triggers a 401 + KYA auth handshake.
     // Start it first: `cd merchant-mcp && npm install && npm start`.
-    "XYZ-Clothiers": {
+    "Auth101 Merch Store": {
       "type": "remote",
       "enabled": true,
-      "url": "http://127.0.0.1:8787/mcp",
+      "url": "https://store.auth101.dev/mcp",
     },
     // Skyfire issuer — hidden from the agent. Mints KYA tokens to authenticate
     // the merchant connection and PAY tokens to settle purchases.
-    "skyfire": {
+    "Skyfire": {
       "type": "remote",
       "enabled": true,
       "url": "https://mcp-qa.skyfire.xyz/mcp",
@@ -23,7 +23,7 @@
         },
       },
       "headers": {
-        "skyfire-api-key": "{env:SKYFIRE_API_KEY}"
+        "skyfire-api-key": "{env:SKYFIRE_API_KEY}",
       },
     },
   },

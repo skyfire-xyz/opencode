@@ -13,7 +13,7 @@ const processes = [
   {
     name: "mock-kya",
     cwd: root,
-    cmd: ["bun", "run", "packages/opencode/script/mock-mcp-kya-server.ts"],
+    cmd: ["bun", "run", "packages/opencode/script/mock-mcp-kya-server.deprecated.ts"],
   },
   {
     name: "opencode",

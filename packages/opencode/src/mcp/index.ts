@@ -38,12 +38,21 @@ import {
   kyaIssuerFromConfig,
   extractJwtFromText,
   probeResourceMetadataUrl,
+  KYA_GRANT_PROFILE,
+  JWT_BEARER_GRANT_TYPE,
 } from "./kya"
 import { Flag } from "@opencode-ai/core/flag/flag"
 
 const log = Log.create({ service: "mcp" })
 const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
 const DEFAULT_TIMEOUT = 30_000
+// How long a gated tool call waits inline for the user to approve a Skyfire KYA
+// sign-in (and a fresh token to be stored) before giving up and returning a prompt.
+const KYA_CONSENT_WAIT_MS = 120_000
+const KYA_CONSENT_POLL_MS = 1_500
+// How long a payment gateway call waits inline for the user to approve (or
+// decline) a charge in the consent dialog before giving up and aborting the mint.
+const PAY_CONSENT_WAIT_MS = 120_000
 
 const TolerantListToolsResultSchema = ListToolsResultSchema.extend({
   tools: ToolSchema.omit({ outputSchema: true }).array(),
@@ -70,6 +79,32 @@ export const BrowserOpenFailed = BusEvent.define(
   Schema.Struct({
     mcpName: Schema.String,
     url: Schema.String,
+  }),
+)
+
+// Emitted when a tool call to a KYA-advertising server returns 401 and the user
+// hasn't signed in yet. The UI reacts by prompting the Skyfire KYA sign-in.
+export const KyaConsentRequired = BusEvent.define(
+  "mcp.kya.consent.required",
+  Schema.Struct({
+    name: Schema.String,
+  }),
+)
+
+// Emitted when the payment gateway has caught a payment signal and is about to
+// mint a pay token. The UI reacts by auto-opening a consent dialog showing the
+// order total breakdown; approving/declining resolves via MCP.payConsent.
+export const PayConsentRequired = BusEvent.define(
+  "mcp.pay.consent.required",
+  Schema.Struct({
+    name: Schema.String,
+    consentId: Schema.String,
+    total: Schema.Number,
+    currency: Schema.String,
+    settlementType: Schema.String,
+    subTotal: Schema.optional(Schema.Number),
+    taxes: Schema.optional(Schema.Number),
+    shippingAndHandling: Schema.optional(Schema.Number),
   }),
 )
 
@@ -151,7 +186,7 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
   return arr
     .filter((v): v is string => typeof v === "string")
     .flatMap((value) => {
-      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === KYA_GRANT_PROFILE) return ["kya", value]
       if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
       return [value]
     })
@@ -219,11 +254,11 @@ async function detectKyaSupport(name: string, serverUrl: string): Promise<KyaSup
   if (!authServer) return { supportsKya: false, authServer: undefined, sellerServiceId }
 
   log.info("[detectKyaSupport] fetching AS metadata", { name, authServer })
-  const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+  const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
     headers: { accept: "application/json" },
   })
-  const asJson = rfc8414.ok
-    ? await rfc8414.json()
+  const asJson = asMetadataRes.ok
+    ? await asMetadataRes.json()
     : await fetch(new URL("/.well-known/openid-configuration", authServer), {
         headers: { accept: "application/json" },
       }).then((r) => (r.ok ? r.json() : undefined))
@@ -258,7 +293,7 @@ function trySilentKya(args: {
   // silently degrading to interactive OAuth.
   let advertised = false
   return Effect.gen(function* () {
-    log.info("===== KYA auth flow BEGIN =====", {
+    log.info("[trySilentKya] KYA auth flow BEGIN", {
       name: args.name,
       url: args.serverUrl,
       hasSkyfire: !!args.issuer,
@@ -357,10 +392,10 @@ function trySilentKya(args: {
       try: async () => {
         const authServer = kyaSupport.authServer
         if (!authServer) return undefined
-        const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+        const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
           headers: { accept: "application/json" },
         })
-        return rfc8414.ok ? ((await rfc8414.json()) as any) : undefined
+        return asMetadataRes.ok ? ((await asMetadataRes.json()) as any) : undefined
       },
       catch: () => undefined,
     })
@@ -380,7 +415,7 @@ function trySilentKya(args: {
     log.info("[trySilentKya] exchanging assertion for access token", { name: args.name, tokenEndpoint })
 
     const form = new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      grant_type: JWT_BEARER_GRANT_TYPE,
       assertion,
     })
 
@@ -437,7 +472,7 @@ function trySilentKya(args: {
       )
     }),
     Effect.tap((result) =>
-      Effect.sync(() => log.info("===== KYA auth flow END =====", { name: args.name, ...result })),
+      Effect.sync(() => log.info("[trySilentKya] KYA auth flow END", { name: args.name, ...result })),
     ),
   )
 }
@@ -474,12 +509,43 @@ function listTools(key: string, client: MCPClient, timeout: number) {
   )
 }
 
+// A tool-call 401 arrives either as the SDK's UnauthorizedError or a
+// StreamableHTTPError carrying code 401.
+function isUnauthorizedError(error: unknown): boolean {
+  if (error instanceof UnauthorizedError) return true
+  if (error && typeof error === "object") {
+    const e = error as { name?: string; code?: number; message?: string }
+    if (e.name === "UnauthorizedError") return true
+    if (e.code === 401) return true
+    if (typeof e.message === "string" && /\b401\b|unauthorized/i.test(e.message)) return true
+  }
+  return false
+}
+
+// Hook invoked when a tool call 401s. It decides the outcome:
+//   - retry: a Skyfire sign-in was approved and a fresh token stored → retry inline
+//   - gate: sign-in needed but not approved (timed out) → return a prompt result
+//   - passthrough: unrelated 401 (not a KYA server) → rethrow unchanged
+type KyaToolHook = {
+  onUnauthorized: () => Promise<{ action: "retry" } | { action: "gate"; text: string } | { action: "passthrough" }>
+}
+
 // Convert MCP tool definition to AI SDK Tool type
 function convertMcpTool(
   mcpTool: MCPToolDef,
   client: MCPClient,
   timeout?: number,
   gateway?: { clients: Record<string, MCPClient>; capabilityMap: CapabilityMap },
+  kya?: KyaToolHook,
+  requestPayConsent?: (info: {
+    total: number
+    currency: string
+    subTotal?: number
+    taxes?: number
+    shippingAndHandling?: number
+    settlementType: string
+    settlementTypes: string[]
+  }) => Promise<boolean>,
 ): Tool {
   const inputSchema = mcpTool.inputSchema
 
@@ -495,27 +561,56 @@ function convertMcpTool(
     description: mcpTool.description ?? "",
     inputSchema: jsonSchema(schema),
     execute: async (args: unknown) => {
-      if (gateway) {
-        return executeWithGateway({
-          toolName: mcpTool.name,
-          args: (args || {}) as Record<string, unknown>,
-          client,
-          clients: gateway.clients,
-          capabilityMap: gateway.capabilityMap,
-          timeout,
-        })
+      const run = () =>
+        gateway
+          ? executeWithGateway({
+              toolName: mcpTool.name,
+              args: (args || {}) as Record<string, unknown>,
+              client,
+              clients: gateway.clients,
+              capabilityMap: gateway.capabilityMap,
+              timeout,
+              requestPayConsent,
+            })
+          : client.callTool(
+              { name: mcpTool.name, arguments: (args || {}) as Record<string, unknown> },
+              CallToolResultSchema,
+              { resetTimeoutOnProgress: true, timeout },
+            )
+      log.info("[convertMcpTool] tool call REQUEST", { tool: mcpTool.name, args })
+      try {
+        const result = await run()
+        log.info("[convertMcpTool] tool call RESPONSE", { tool: mcpTool.name, isError: !!(result as any)?.isError })
+        return result
+      } catch (error) {
+        // A 401 from a KYA-advertising server is recoverable: the hook prompts the
+        // user to sign in and waits; when approved (a fresh token is stored) we retry
+        // this same call inline so it completes in one go. Everything else rethrows.
+        if (!kya || !isUnauthorizedError(error)) throw error
+        const outcome = await kya.onUnauthorized()
+        if (outcome.action === "retry") {
+          try {
+            return await run()
+          } catch (retryError) {
+            // Sign-in happened but the token still didn't unlock the tool (e.g. the
+            // issuer's assertion was rejected). Surface a clear result, don't loop.
+            if (isUnauthorizedError(retryError))
+              return {
+                content: [
+                  {
+                    type: "text" as const,
+                    text: "The Skyfire sign-in completed but the tool is still unauthorized (the token was rejected). Please check the server's Skyfire configuration.",
+                  },
+                ],
+                isError: true,
+              }
+            throw retryError
+          }
+        }
+        if (outcome.action === "gate")
+          return { content: [{ type: "text" as const, text: outcome.text }], isError: true }
+        throw error
       }
-      return client.callTool(
-        {
-          name: mcpTool.name,
-          arguments: (args || {}) as Record<string, unknown>,
-        },
-        CallToolResultSchema,
-        {
-          resetTimeoutOnProgress: true,
-          timeout,
-        },
-      )
     },
   })
 }
@@ -583,6 +678,10 @@ export interface Interface {
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCP.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
   readonly connect: (name: string, opts?: { kyaConsent?: boolean }) => Effect.Effect<void, NotFoundError>
+  readonly kyaAuthorize: (
+    name: string,
+  ) => Effect.Effect<{ status: "connected" | "failed"; error?: string }, NotFoundError>
+  readonly payConsent: (consentId: string, approved: boolean) => Effect.Effect<{ resolved: boolean }>
   readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
   readonly getPrompt: (
     clientName: string,
@@ -614,6 +713,13 @@ export const layer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     const auth = yield* McpAuth.Service
     const bus = yield* Bus.Service
+
+    // Pending payment-consent prompts keyed by consentId. The gateway registers
+    // a resolver before publishing PayConsentRequired and waits on it; the UI's
+    // payConsent call resolves it. Lives in the (per-instance) service closure
+    // so both the tool-execute hook and the payConsent handler share it, and
+    // workspace routing keeps the HTTP call on this same instance.
+    const pendingPayConsents = new Map<string, (approved: boolean) => void>()
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -665,11 +771,17 @@ export const layer = Layer.effect(
             redirectUri: oauthConfig?.redirectUri,
           },
           {
+            // Fires only for non-KYA servers: the provider suppresses DCR + redirect
+            // for KYA servers, but ordinary OAuth servers still reach this callback.
             onRedirect: async (url) => {
               log.info("[connectRemote] oauth redirect requested", { key, url: url.toString() })
             },
           },
           auth,
+          // allowInteractive = false: on the auto-connect / live transport, suppress
+          // interactive OAuth (DCR + browser) *only for KYA servers* so a 401 surfaces
+          // to our KYA handlers. Non-KYA servers still get standard interactive OAuth.
+          false,
         )
       }
 
@@ -761,42 +873,7 @@ export const layer = Layer.effect(
                       return undefined
                     }
 
-                    const cfg = yield* cfgSvc.get()
-                    const configuredIssuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
-
-                    // Parity with the payment gateway, which only mints through a
-                    // *connected* provider (gateway.ts looks the issuer up in
-                    // s.clients). Require the KYA issuer to be enabled (toggled on,
-                    // hence connected) too: connecting it is what validates its
-                    // config and API key, and it stops KYA from running silently for
-                    // an issuer the user never enabled.
-                    const s = yield* InstanceState.get(state)
-                    const issuerEnabled =
-                      !!configuredIssuer && s.status[configuredIssuer.name]?.status === "connected"
-                    const issuer = issuerEnabled ? configuredIssuer : undefined
-
-                    if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
-                      // No usable issuer means we can't mint, and KYA is the only
-                      // sanctioned path. Set OPENCODE_KYA_INTERACTIVE_FALLBACK=1 to
-                      // fall through to interactive OAuth instead.
-                      lastStatus = {
-                        status: "failed" as const,
-                        error:
-                          configuredIssuer && !issuerEnabled
-                            ? `KYA issuer "${configuredIssuer.name}" is configured but not enabled. Enable it (toggle it on) so its config and API key are validated, then retry "${key}".`
-                            : 'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
-                      }
-                      return undefined
-                    }
-
-                    const minted = yield* trySilentKya({
-                      name: key,
-                      serverUrl: mcp.url,
-                      auth,
-                      issuer,
-                      sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
-                    })
-
+                    const minted = yield* mintKya(key, mcp.url)
                     if (minted.minted) {
                       // Token stored — retry StreamableHTTP once with a fresh transport.
                       kyaRetried = true
@@ -811,16 +888,16 @@ export const layer = Layer.effect(
                       )
                     }
 
-                    // Consent given but minting failed — surface a clear failure
-                    // rather than silently falling back to interactive OAuth.
-                    lastStatus = {
-                      status: "failed" as const,
-                      error:
-                        "error" in minted && typeof minted.error === "string"
-                          ? minted.error
-                          : "Silent KYA token minting failed",
-                    }
-                    return undefined
+                    // Consent given but KYA minting couldn't complete (e.g. no issuer
+                    // configured, or a mint / token-exchange error). KYA is the priority
+                    // when advertised, but it falls back to opencode's default OAuth:
+                    // don't return here — let control fall through to the needs_auth path
+                    // below, which stores the pending transport and prompts the user to run
+                    // `opencode mcp auth <key>` (the interactive DCR + browser flow).
+                    log.warn("[connectRemote] KYA minting failed; falling back to default OAuth", {
+                      key,
+                      error: minted.error ?? "Silent KYA token minting failed",
+                    })
                   }
                 }
 
@@ -1080,12 +1157,82 @@ export const layer = Layer.effect(
       return { status: s.status }
     })
 
+    // Resolve the KYA issuer to mint through. Parity with the payment gateway: the
+    // issuer must be configured AND enabled (toggled on, hence connected) so its
+    // config + API key are validated. Shared by the connect-time 401 path and the
+    // tool-call authorize path.
+    const resolveEnabledKyaIssuer = Effect.fn("MCP.resolveEnabledKyaIssuer")(function* () {
+      const cfg = yield* cfgSvc.get()
+      const configuredIssuer = kyaIssuerFromConfig(cfg.mcp as Record<string, ConfigMCP.Info> | undefined)
+      const s = yield* InstanceState.get(state)
+      const issuerEnabled = !!configuredIssuer && s.status[configuredIssuer.name]?.status === "connected"
+      const issuer = issuerEnabled ? configuredIssuer : undefined
+      if (!issuer && !Flag.OPENCODE_KYA_INTERACTIVE_FALLBACK) {
+        return {
+          issuer: undefined,
+          error:
+            configuredIssuer && !issuerEnabled
+              ? `KYA issuer "${configuredIssuer.name}" is configured but not enabled. Enable it (toggle it on) so its config and API key are validated, then retry.`
+              : 'KYA supported but no issuer configured. Add a remote MCP server with capabilities: { "org.kyapay:kya": { "tool": "create-kya-token" } }.',
+        }
+      }
+      return { issuer, error: undefined as string | undefined }
+    })
+
+    // Mint + exchange + store a KYA access token for `name`. Returns minted:false
+    // with a human-readable error on any failure (no issuer, mint/exchange failed).
+    const mintKya = Effect.fn("MCP.mintKya")(function* (name: string, serverUrl: string) {
+      const { issuer, error } = yield* resolveEnabledKyaIssuer()
+      if (error) return { minted: false as const, error }
+      const result = yield* trySilentKya({
+        name,
+        serverUrl,
+        auth,
+        issuer,
+        sellerServiceId: Flag.OPENCODE_KYA_SELLER_SERVICE_ID,
+      })
+      if (result.minted) return { minted: true as const }
+      return {
+        minted: false as const,
+        error: "error" in result && typeof result.error === "string" ? result.error : "Silent KYA token minting failed",
+      }
+    })
+
     const connect = Effect.fn("MCP.connect")(function* (name: string, opts?: { kyaConsent?: boolean }) {
       const mcp = yield* requireMcpConfig(name)
       // KYA detection + consent gating happens in connectRemote at the real 401.
       // `kyaConsent` carries the user's "Sign in with Skyfire KYA" confirmation:
       // false → gate (needs_kya_consent); true → mint + connect.
       yield* createAndStore(name, { ...mcp, enabled: true }, opts?.kyaConsent ?? false)
+    })
+
+    // Mint a KYA token for an already-connected server (the user approved the
+    // tool-call sign-in prompt). Unlike connect(), this does NOT reconnect — the
+    // live transport reads the stored token on its next request. On success we
+    // flip the status back to connected so the previously-gated tools reappear.
+    const kyaAuthorize = Effect.fn("MCP.kyaAuthorize")(function* (name: string) {
+      const mcp = yield* requireMcpConfig(name)
+      if (mcp.type !== "remote")
+        return { status: "failed" as const, error: "KYA is only supported for remote MCP servers." }
+      const minted = yield* mintKya(name, mcp.url)
+      if (!minted.minted) return { status: "failed" as const, error: minted.error ?? "Silent KYA token minting failed" }
+      const s = yield* InstanceState.get(state)
+      if (s.status[name]?.status !== "connected") s.status[name] = { status: "connected" as const }
+      return { status: "connected" as const }
+    })
+
+    // Resolve a pending payment-consent prompt (the user clicked Yes/No in the
+    // consent dialog). The waiting gateway call unblocks and either mints or
+    // aborts. Returns resolved:false when the consentId is unknown (e.g. the
+    // prompt already timed out).
+    const payConsent = Effect.fn("MCP.payConsent")(function* (consentId: string, approved: boolean) {
+      const resolve = pendingPayConsents.get(consentId)
+      if (!resolve) {
+        log.info("[payConsent] no pending consent for id", { consentId })
+        return { resolved: false }
+      }
+      resolve(approved)
+      return { resolved: true }
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
@@ -1099,6 +1246,8 @@ export const layer = Layer.effect(
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
+      // Lets the detached tool-execute callback publish bus events from async code.
+      const bridge = yield* EffectBridge.make()
 
       const cfg = yield* cfgSvc.get()
       const config = cfg.mcp ?? {}
@@ -1133,12 +1282,98 @@ export const layer = Layer.effect(
             const hasCapabilities = Object.keys(capabilityMap).length > 0
             const gateway = hasCapabilities ? { clients: s.clients, capabilityMap } : undefined
 
+            // For remote servers, gate a tool-call 401 behind a Skyfire sign-in
+            // prompt when (and only when) the server advertises KYA. Detection runs
+            // lazily — only on an actual 401, not at list time.
+            const remoteUrl = entry && isMcpConfigured(entry) && entry.type === "remote" ? entry.url : undefined
+            const kya: KyaToolHook | undefined = remoteUrl
+              ? {
+                  onUnauthorized: async () => {
+                    const support = await detectKyaSupport(clientName, remoteUrl).catch(
+                      () => ({ supportsKya: false }) as Awaited<ReturnType<typeof detectKyaSupport>>,
+                    )
+                    if (!support.supportsKya) return { action: "passthrough" as const }
+                    const origin = new URL(remoteUrl).origin
+                    // Snapshot the current (rejected/absent) token so we can detect a
+                    // *fresh* mint, not a stale one already on disk.
+                    const before = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
+                    // Prompt for sign-in via the global bus (the UI auto-opens the
+                    // consent dialog). McpAuth is a global file, so kyaAuthorize's mint
+                    // from the UI's request is visible to this poll across instances.
+                    await bridge.promise(bus.publish(KyaConsentRequired, { name: clientName }).pipe(Effect.ignore))
+                    // Wait (in this same tool call) for the user to approve and a fresh
+                    // token to land, so we can retry inline — no second prompt needed.
+                    const deadline = Date.now() + KYA_CONSENT_WAIT_MS
+                    while (Date.now() < deadline) {
+                      await new Promise((resolve) => setTimeout(resolve, KYA_CONSENT_POLL_MS))
+                      const token = (await bridge.promise(auth.getForUrl(clientName, origin)))?.tokens?.accessToken
+                      if (token && token !== before) return { action: "retry" as const }
+                    }
+                    log.info("[kya] consent not approved within wait window", { name: clientName })
+                    return {
+                      action: "gate" as const,
+                      text: `Skyfire KYA sign-in for "${clientName}" wasn't approved in time. Approve the Skyfire sign-in prompt, then ask me to retry.`,
+                    }
+                  },
+                }
+              : undefined
+
+            // When a gateway is active, gate pay-token minting behind a consent
+            // dialog. The gateway calls this once it has caught a payment signal
+            // and resolved a provider; we publish the order total and block this
+            // tool call until the user approves (or it times out → decline).
+            const requestPayConsent = gateway
+              ? async (info: {
+                  total: number
+                  currency: string
+                  subTotal?: number
+                  taxes?: number
+                  shippingAndHandling?: number
+                  settlementType: string
+                  settlementTypes: string[]
+                }) =>
+                  new Promise<boolean>((resolve) => {
+                    const consentId = crypto.randomUUID()
+                    let done = false
+                    const finish = (approved: boolean) => {
+                      if (done) return
+                      done = true
+                      clearTimeout(timer)
+                      pendingPayConsents.delete(consentId)
+                      resolve(approved)
+                    }
+                    const timer = setTimeout(() => {
+                      log.info("[pay] consent not approved within wait window", { name: clientName })
+                      finish(false)
+                    }, PAY_CONSENT_WAIT_MS)
+                    pendingPayConsents.set(consentId, finish)
+                    void bridge
+                      .promise(
+                        bus
+                          .publish(PayConsentRequired, {
+                            name: clientName,
+                            consentId,
+                            total: info.total,
+                            currency: info.currency,
+                            settlementType: info.settlementType,
+                            subTotal: info.subTotal,
+                            taxes: info.taxes,
+                            shippingAndHandling: info.shippingAndHandling,
+                          })
+                          .pipe(Effect.ignore),
+                      )
+                      .catch(() => finish(false))
+                  })
+              : undefined
+
             for (const mcpTool of listed) {
               result[sanitize(clientName) + "_" + sanitize(mcpTool.name)] = convertMcpTool(
                 mcpTool,
                 client,
                 timeout,
                 gateway,
+                kya,
+                requestPayConsent,
               )
             }
           }),
@@ -1261,6 +1496,9 @@ export const layer = Layer.effect(
           },
         },
         auth,
+        // allowInteractive = true: this is the explicit interactive flow, so DCR and
+        // the authorization redirect are expected.
+        true,
       )
 
       const transport = new StreamableHTTPClientTransport(url, { authProvider })
@@ -1401,6 +1639,8 @@ export const layer = Layer.effect(
       resources,
       add,
       connect,
+      kyaAuthorize,
+      payConsent,
       disconnect,
       getPrompt,
       readResource,

@@ -21,6 +21,22 @@ const ConnectQuery = Schema.Struct({
   kyaConsent: Schema.optional(QueryBoolean),
 })
 
+// kyaAuthorize requires the caller to pass consentGiven=true, mirroring the
+// kyaConsent flag on connect. This prevents the endpoint from being used to
+// silently mint tokens without explicit user confirmation.
+const KyaAuthorizeQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  consentGiven: QueryBoolean,
+})
+
+// payConsent resolves a pending payment-consent prompt: the user's Yes/No from
+// the order-total dialog the gateway raised before minting a pay token.
+const PayConsentQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  consentId: Schema.String,
+  approved: QueryBoolean,
+})
+
 export const AddPayload = Schema.Struct({
   name: Schema.String,
   config: ConfigMCP.Info,
@@ -48,6 +64,8 @@ export const McpPaths = {
   authCallback: "/mcp/:name/auth/callback",
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
+  kyaAuthorize: "/mcp/:name/kya-authorize",
+  payConsent: "/mcp/:name/pay-consent",
   disconnect: "/mcp/:name/disconnect",
 } as const
 
@@ -137,6 +155,30 @@ export const McpApi = HttpApi.make("mcp")
             identifier: "mcp.connect",
             description:
               "Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.",
+          }),
+        ),
+        HttpApiEndpoint.post("kyaAuthorize", McpPaths.kyaAuthorize, {
+          params: { name: Schema.String },
+          query: KyaAuthorizeQuery,
+          success: described(Schema.Boolean, "Skyfire KYA token minted for the server"),
+          error: [McpServerNotFoundError, HttpApiError.BadRequest],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.kyaAuthorize",
+            description:
+              "Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.",
+          }),
+        ),
+        HttpApiEndpoint.post("payConsent", McpPaths.payConsent, {
+          params: { name: Schema.String },
+          query: PayConsentQuery,
+          success: described(Schema.Boolean, "Payment consent recorded (resolved a pending prompt)"),
+          error: McpServerNotFoundError,
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.payConsent",
+            description:
+              "Approve or decline a pending payment-consent prompt raised by the gateway before minting a pay token. Returns true when a pending prompt was resolved.",
           }),
         ),
         HttpApiEndpoint.post("disconnect", McpPaths.disconnect, {

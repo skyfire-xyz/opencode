@@ -1,4 +1,7 @@
 import { ConfigMCP } from "@/config/mcp"
+import * as Log from "@opencode-ai/core/util/log"
+
+const log = Log.create({ service: "mcp.kya" })
 
 /** Capability URI an MCP server advertises to act as a KYA token issuer. */
 export const KYA_CAPABILITY = "org.kyapay:kya"
@@ -46,8 +49,26 @@ function kyaCapabilityTool(config: ConfigMCP.Remote): string | undefined {
  * "Creation of KYA token for <id> is complete: <jwt>".
  */
 export function extractJwtFromText(input: string): string | undefined {
-  const m = input.match(/([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
+  // Anchor on the JWT header prefix `eyJ` (base64url of `{"`). Without it a bare
+  // `word.word.word` regex matches any domain in the message (e.g. the seller's
+  // "store.auth101.dev" in "Creation of KYA token for store.auth101.dev is
+  // complete: <jwt>") before the actual token.
+  const m = input.match(/(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)/)
   return m ? m[1] : undefined
+}
+
+/** Read a string-valued field from an unknown JSON object, else `undefined`. */
+function getStringField(obj: unknown, key: string): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined
+  const value = (obj as Record<string, unknown>)[key]
+  return typeof value === "string" ? value : undefined
+}
+
+/** Read the first element of a string-array field from an unknown JSON object, else `undefined`. */
+function getFirstStringInArrayField(obj: unknown, key: string): string | undefined {
+  if (!obj || typeof obj !== "object") return undefined
+  const value = (obj as Record<string, unknown>)[key]
+  return Array.isArray(value) && typeof value[0] === "string" ? value[0] : undefined
 }
 
 /**
@@ -67,8 +88,15 @@ export async function probeResourceMetadataUrl(serverUrl: string): Promise<strin
     if (res.status !== 401) return undefined
     const wwwAuth = res.headers.get("www-authenticate")
     const m = wwwAuth?.match(/resource_metadata="?([^",\s]+)"?/i)
-    return m?.[1]
-  } catch {
+    if (!m) return undefined
+    // `resource_metadata` may be a relative URI reference; resolve it against the
+    // probed URL so callers can fetch it directly.
+    return new URL(m[1], serverUrl).toString()
+  } catch (error) {
+    log.error("[probeResourceMetadataUrl] probe failed; falling back to well-known location", {
+      serverUrl,
+      error,
+    })
     return undefined
   }
 }
@@ -91,28 +119,75 @@ export async function discoverResourceAuthServer(
   })
   if (!protectedRes.ok) return undefined
 
-  const protectedJson = (await protectedRes.json()) as any
-  const authServer =
-    Array.isArray(protectedJson?.authorization_servers) && typeof protectedJson.authorization_servers[0] === "string"
-      ? (protectedJson.authorization_servers[0] as string)
-      : undefined
+  const protectedJson: unknown = await protectedRes.json()
+  const authServer = getFirstStringInArrayField(protectedJson, "authorization_servers")
   if (!authServer) return undefined
 
-  const rfc8414 = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+  const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
     headers: { accept: "application/json" },
   })
-  const asJson = rfc8414.ok
-    ? await rfc8414.json()
+  const asJson: unknown = asMetadataRes.ok
+    ? await asMetadataRes.json()
     : await fetch(new URL("/.well-known/openid-configuration", authServer), {
         headers: { accept: "application/json" },
       }).then((r) => (r.ok ? r.json() : undefined))
 
-  const tokenEndpoint =
-    asJson && typeof asJson === "object" && typeof (asJson as any).token_endpoint === "string"
-      ? ((asJson as any).token_endpoint as string)
-      : undefined
+  const tokenEndpoint = getStringField(asJson, "token_endpoint")
   if (!tokenEndpoint) return undefined
   return { authServer, tokenEndpoint }
+}
+
+/** Grant-profile URN a Resource AS advertises (RFC 8414 metadata) to offer KYA. */
+export const KYA_GRANT_PROFILE = "urn:ietf:params:oauth:grant-profile:kya"
+
+/** Grant-type URN for JWT bearer assertion exchange (RFC 7523). */
+export const JWT_BEARER_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:jwt-bearer"
+
+/** Whether AS/OpenID metadata advertises the KYA grant profile. */
+export function metadataAdvertisesKya(metadata: unknown): boolean {
+  if (!metadata || typeof metadata !== "object") return false
+  const arr = (metadata as Record<string, unknown>)["authorization_grant_profiles_supported"]
+  return Array.isArray(arr) && arr.includes(KYA_GRANT_PROFILE)
+}
+
+/**
+ * Detect whether the Resource AS for an MCP server advertises the KYA grant
+ * profile, following the spec discovery chain (probe 401 → RFC 9728 protected
+ * resource metadata → RFC 8414 AS metadata, falling back to OpenID config).
+ *
+ * Returns `false` on any discovery miss or error so callers default to the
+ * standard (interactive) OAuth path for non-KYA servers.
+ */
+export async function serverAdvertisesKya(serverUrl: string): Promise<boolean> {
+  try {
+    const resourceOrigin = new URL(serverUrl).origin
+    const resourceMetadataUrl =
+      (await probeResourceMetadataUrl(serverUrl)) ??
+      new URL("/.well-known/oauth-protected-resource", resourceOrigin).toString()
+    const protectedRes = await fetch(resourceMetadataUrl, { headers: { accept: "application/json" } })
+    if (!protectedRes.ok) return false
+
+    const protectedJson: unknown = await protectedRes.json()
+    const authServer = getFirstStringInArrayField(protectedJson, "authorization_servers")
+    if (!authServer) return false
+
+    const asMetadataRes = await fetch(new URL("/.well-known/oauth-authorization-server", authServer), {
+      headers: { accept: "application/json" },
+    })
+    const asJson: unknown = asMetadataRes.ok
+      ? await asMetadataRes.json()
+      : await fetch(new URL("/.well-known/openid-configuration", authServer), {
+          headers: { accept: "application/json" },
+        }).then((r) => (r.ok ? r.json() : undefined))
+
+    return metadataAdvertisesKya(asJson)
+  } catch (error) {
+    log.error("[serverAdvertisesKya] discovery failed; treating server as non-KYA", {
+      serverUrl,
+      error,
+    })
+    return false
+  }
 }
 
 /**
@@ -127,11 +202,11 @@ export async function exchangeAssertionForAccessToken(
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      grant_type: JWT_BEARER_GRANT_TYPE,
       assertion,
     }),
   })
   if (!res.ok) throw new Error(`OAuth token exchange failed (${res.status}): ${await res.text()}`)
-  const json = (await res.json()) as any
-  return json && typeof json.access_token === "string" ? json.access_token : undefined
+  const json: unknown = await res.json()
+  return getStringField(json, "access_token")
 }

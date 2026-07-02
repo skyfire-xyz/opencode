@@ -1,3 +1,11 @@
+// ---------------------------------------------------------------------------
+// DEPRECATED — superseded by the two-process mock in `xyz-clothiers-mock/`
+// (mcp-server.js + auth-server.js). That mock is the maintained reference: it
+// uses ES256/JWKS assertion validation per Skyfire's verifyToken example, a
+// real 401-on-protected-tool flow, and checkout/pay settlement. This single-file
+// mock is kept only for older references; prefer xyz-clothiers-mock for new work.
+// ---------------------------------------------------------------------------
+
 import http from "http"
 import crypto from "crypto"
 import { createRemoteJWKSet, jwtVerify } from "jose"

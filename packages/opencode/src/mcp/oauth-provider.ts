@@ -8,6 +8,7 @@ import type {
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import { Effect } from "effect"
 import { McpAuth } from "./auth"
+import { serverAdvertisesKya, KYA_GRANT_PROFILE } from "./kya"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "mcp.oauth" })
@@ -28,19 +29,22 @@ export interface McpOAuthCallbacks {
 }
 
 export class McpOAuthProvider implements OAuthClientProvider {
+  // The full transport URL (may include an MCP path such as `/mcp`). Kept distinct
+  // from `serverUrl`, which is normalized to the origin below for OAuth discovery and
+  // token-store keying. KYA detection must probe this endpoint, not the origin root,
+  // so a server that advertises its `resource_metadata` only via `WWW-Authenticate`
+  // on the MCP endpoint is detected correctly.
+  private readonly mcpUrl: string
+
   constructor(
     private mcpName: string,
     private serverUrl: string,
     private config: McpOAuthConfig,
     private callbacks: McpOAuthCallbacks,
     private auth: McpAuth.Interface,
+    private allowInteractive = false,
   ) {
-    // The MCP SDK treats the auth provider's "server URL" as the *origin* where
-    // OAuth discovery endpoints live (/.well-known/*). Our MCP transport URLs
-    // often include the MCP RPC path (e.g. http://host:port/mcp). Normalize
-    // that to the origin so discovery doesn't 404 on /mcp/.well-known/* and so
-    // tokens stored by the out-of-band KYA flow (keyed by origin) are matched
-    // by getForUrl() here.
+    this.mcpUrl = this.serverUrl
     try {
       const parsed = new URL(this.serverUrl)
       this.serverUrl = parsed.origin
@@ -49,45 +53,24 @@ export class McpOAuthProvider implements OAuthClientProvider {
     }
   }
 
+  private kyaAdvertised?: Promise<boolean>
+
+  private isKyaServer(): Promise<boolean> {
+    return (this.kyaAdvertised ??= serverAdvertisesKya(this.mcpUrl))
+  }
+
   /**
-   * The MCP SDK's StreamableHTTP transport will try OAuth discovery against the
-   * MCP origin by requesting `/.well-known/oauth-authorization-server`.
+   * Whether KYA should handle this connection's auth instead of the SDK's
+   * interactive OAuth (Dynamic Client Registration + browser redirect).
    *
-   * Our KYA mock (and some real deployments) host OAuth metadata on a separate
-   * auth origin and advertise it via `WWW-Authenticate: ... authorization-uri="..."`
-   * on 401 responses from the MCP endpoint.
-   *
-   * To avoid a confusing "Invalid OAuth error response" when the MCP origin
-   * correctly returns plain-text 404 for `/.well-known/*`, we proactively trigger
-   * a 401 against the MCP endpoint and let the SDK parse the advertised metadata.
+   * KYA takes priority when the server advertises the KYA grant profile, so on the
+   * auto-connect transport we defer to it (suppress the interactive flow and let the
+   * 401 surface to the KYA handlers). Everything else falls back to opencode's default
+   * OAuth behavior: servers that don't advertise KYA, and the explicit startAuth()
+   * flow (`allowInteractive`), which always runs interactive OAuth regardless of KYA.
    */
-  private async ensureDiscoveryViaWwwAuthenticate(): Promise<void> {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 2_000)
-
-    try {
-      const url = new URL(this.serverUrl)
-      url.pathname = "/mcp"
-      url.search = ""
-      url.hash = ""
-
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", id: 0, method: "initialize", params: {} }),
-        signal: controller.signal,
-      })
-
-      if (res.status === 401) {
-        // Throwing the SDK's UnauthorizedError is enough for it to parse
-        // `WWW-Authenticate` and continue the OAuth discovery flow.
-        throw new UnauthorizedError("MCP server requires authentication")
-      }
-    } catch {
-      // This is a best-effort preflight; ignore failures and let the SDK do its normal flow.
-    } finally {
-      clearTimeout(timeout)
-    }
+  private async shouldDeferToKya(): Promise<boolean> {
+    return !this.allowInteractive && (await this.isKyaServer())
   }
 
   get redirectUrl(): string {
@@ -111,8 +94,6 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
-    await this.ensureDiscoveryViaWwwAuthenticate()
-
     // Check config first (pre-registered client)
     if (this.config.clientId) {
       return {
@@ -124,19 +105,27 @@ export class McpOAuthProvider implements OAuthClientProvider {
     // Check stored client info (from dynamic registration)
     // Use getForUrl to validate credentials are for the current server URL
     const entry = await Effect.runPromise(this.auth.getForUrl(this.mcpName, this.serverUrl))
-    if (entry?.clientInfo) {
-      // Check if client secret has expired
-      if (entry.clientInfo.clientSecretExpiresAt && entry.clientInfo.clientSecretExpiresAt < Date.now() / 1000) {
-        log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
-        return undefined
-      }
+    const stored = entry?.clientInfo
+    const storedExpired = !!stored?.clientSecretExpiresAt && stored.clientSecretExpiresAt < Date.now() / 1000
+    if (stored && !storedExpired) {
       return {
-        client_id: entry.clientInfo.clientId,
-        client_secret: entry.clientInfo.clientSecret,
+        client_id: stored.clientId,
+        client_secret: stored.clientSecret,
+      }
+    }
+    if (storedExpired) {
+      log.info("[clientInformation] client secret expired, need to re-register", { mcpName: this.mcpName })
+    }
+
+    if (await this.isKyaServer()) {
+      if (!this.allowInteractive) {
+        log.warn("[clientInformation] KYA server: suppressing Dynamic Client Registration; routing 401 to KYA", {
+          mcpName: this.mcpName,
+        })
+        throw new UnauthorizedError("DCR suppressed for KYA server; KYA handles this 401")
       }
     }
 
-    // No client info or URL changed - will trigger dynamic registration
     return undefined
   }
 
@@ -192,7 +181,16 @@ export class McpOAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
-    log.info("[redirectToAuthorization] redirecting to authorization", { mcpName: this.mcpName, url: authorizationUrl.toString() })
+    if (await this.shouldDeferToKya()) {
+      log.warn("[redirectToAuthorization] deferring to KYA: suppressing interactive OAuth redirect; routing 401 to KYA", {
+        mcpName: this.mcpName,
+      })
+      throw new UnauthorizedError("interactive OAuth redirect deferred to KYA; KYA handles this 401")
+    }
+    log.info("[redirectToAuthorization] redirecting to authorization", {
+      mcpName: this.mcpName,
+      url: authorizationUrl.toString(),
+    })
     await this.callbacks.onRedirect(authorizationUrl)
   }
 
@@ -286,7 +284,7 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
   return arr
     .filter((v): v is string => typeof v === "string")
     .flatMap((value) => {
-      if (value === "urn:ietf:params:oauth:grant-profile:kya") return ["kya", value]
+      if (value === KYA_GRANT_PROFILE) return ["kya", value]
       if (value === "urn:ietf:params:oauth:grant-profile:id-jag") return ["id-jag", value]
       return [value]
     })

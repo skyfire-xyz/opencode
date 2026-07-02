@@ -87,6 +87,8 @@ import { getScrollAcceleration } from "../../util/scroll"
 import { collapseToolOutput } from "../../util/collapse-tool-output"
 import { TuiPluginRuntime } from "@/cli/cmd/tui/plugin/runtime"
 import { DialogRetryAction } from "../../component/dialog-retry-action"
+import { useKyaConsentDialog } from "./kya-consent"
+import { usePayConsentDialog } from "./pay-consent"
 import { SessionRetry } from "@/session/retry"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
@@ -338,6 +340,9 @@ export function Session() {
       kv.set(keys.lastSeenAt, Date.now())
     })
   })
+
+  useKyaConsentDialog()
+  usePayConsentDialog()
 
   const exit = useExit()
 

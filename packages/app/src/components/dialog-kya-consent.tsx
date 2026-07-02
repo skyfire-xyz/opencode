@@ -12,10 +12,14 @@ import { pathKey } from "@/utils/path-key"
 
 // Consent gate for "Sign in with Skyfire KYA". The server has been detected as
 // supporting the Skyfire KYA grant profile (status needs_kya_consent); confirming
-// re-runs connect with kyaConsent=true, which mints + exchanges the token and
-// connects. Cancelling — the X, Esc, or click-away provided by the dialog shell —
-// does nothing, so no token is minted.
-export const DialogKyaConsent: Component<{ name: string }> = (props) => {
+// mints + exchanges the token.
+//   - mode "connect" (default): the server isn't connected yet (connect-time
+//     401) — re-run connect with kyaConsent=true, which mints AND connects.
+//   - mode "authorize": the server is already connected but a gated tool returned
+//     401 — mint via kyaAuthorize without reconnecting; the live transport picks
+//     up the stored token on its next request.
+// Cancelling — the X, Esc, or click-away — does nothing, so no token is minted.
+export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "authorize" }> = (props) => {
   const sdk = useSDK()
   const sync = useSync()
   const dialog = useDialog()
@@ -24,7 +28,10 @@ export const DialogKyaConsent: Component<{ name: string }> = (props) => {
   const queryOptions = useQueryOptions()
 
   const confirm = useMutation(() => ({
-    mutationFn: () => sdk.client.mcp.connect({ name: props.name, kyaConsent: "true" }),
+    mutationFn: () =>
+      props.mode === "authorize"
+        ? sdk.client.mcp.kyaAuthorize({ name: props.name, consentGiven: "true" })
+        : sdk.client.mcp.connect({ name: props.name, kyaConsent: "true" }),
     onSuccess: async () => {
       dialog.close()
       // Post-consent minting can fail (e.g. issuer not enabled) as a `failed` status,
