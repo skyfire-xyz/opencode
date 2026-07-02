@@ -41,6 +41,7 @@ import {
   KYA_GRANT_PROFILE,
   JWT_BEARER_GRANT_TYPE,
 } from "./kya"
+import { decodeJwt } from "jose"
 import { Flag } from "@opencode-ai/core/flag/flag"
 
 const log = Log.create({ service: "mcp" })
@@ -441,18 +442,35 @@ function trySilentKya(args: {
       } satisfies KyaMintResult
     }
 
+
+    let expiresAt: number | undefined =
+    typeof tokenJson.expires_in === "number" ? Date.now() / 1000 + tokenJson.expires_in : undefined
+    if (expiresAt === undefined) {
+      try {
+        const exp = decodeJwt(accessToken).exp
+        if (typeof exp === "number") expiresAt = exp
+      } catch {
+        // Access token isn't a readable JWT — leave expiry unset.
+      }
+    }
+
     log.info("[trySilentKya] token exchange success", {
       name: args.name,
       accessTokenPrefix: accessToken.slice(0, 12),
       accessTokenLength: accessToken.length,
+      expiresAt,
     })
 
     yield* args.auth.updateTokens(
       args.name,
-      { accessToken, refreshToken: undefined, expiresAt: undefined, scope: undefined },
+      {
+        accessToken,
+        refreshToken: undefined,
+        expiresAt,
+        scope: typeof tokenJson.scope === "string" ? tokenJson.scope : undefined,
+      },
       new URL(args.serverUrl).origin,
     )
-
     log.info("[trySilentKya] stored access token", {
       name: args.name,
       tokenKey: new URL(args.serverUrl).origin,
