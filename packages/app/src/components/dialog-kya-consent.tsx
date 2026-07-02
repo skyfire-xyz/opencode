@@ -18,8 +18,15 @@ import { pathKey } from "@/utils/path-key"
 //   - mode "authorize": the server is already connected but a gated tool returned
 //     401 — mint via kyaAuthorize without reconnecting; the live transport picks
 //     up the stored token on its next request.
-// Cancelling — the X, Esc, or click-away — does nothing, so no token is minted.
-export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "authorize" }> = (props) => {
+// Cancelling — the No button, X, Esc, or click-away — never mints. In authorize
+// mode the opener passes a dialog onClose that reports the decline (unblocking
+// the waiting tool call); `onSettle` marks that Approve was chosen so that
+// close isn't misread as a decline.
+export const DialogKyaConsent: Component<{
+  name: string
+  mode?: "connect" | "authorize"
+  onSettle?: () => void
+}> = (props) => {
   const sdk = useSDK()
   const sync = useSync()
   const dialog = useDialog()
@@ -67,7 +74,15 @@ export const DialogKyaConsent: Component<{ name: string; mode?: "connect" | "aut
           <Button variant="ghost" size="large" onClick={() => dialog.close()} disabled={confirm.isPending}>
             {language.t("dialog.kyaConsent.no")}
           </Button>
-          <Button variant="primary" size="large" onClick={() => confirm.mutate()} disabled={confirm.isPending}>
+          <Button
+            variant="primary"
+            size="large"
+            onClick={() => {
+              props.onSettle?.()
+              confirm.mutate()
+            }}
+            disabled={confirm.isPending}
+          >
             {language.t("dialog.kyaConsent.yes")}
           </Button>
         </div>

@@ -21,9 +21,11 @@ const ConnectQuery = Schema.Struct({
   kyaConsent: Schema.optional(QueryBoolean),
 })
 
-// kyaAuthorize requires the caller to pass consentGiven=true, mirroring the
-// kyaConsent flag on connect. This prevents the endpoint from being used to
-// silently mint tokens without explicit user confirmation.
+// kyaAuthorize carries the user's dialog answer: consentGiven=true mints
+// (mirroring the kyaConsent flag on connect — the endpoint can never silently
+// mint without explicit user confirmation); consentGiven=false records a
+// decline, which never mints and only unblocks any tool call waiting on this
+// server's consent so it gates promptly instead of timing out.
 const KyaAuthorizeQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
   consentGiven: QueryBoolean,
@@ -166,7 +168,7 @@ export const McpApi = HttpApi.make("mcp")
           OpenApi.annotations({
             identifier: "mcp.kyaAuthorize",
             description:
-              "Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.",
+              "Resolve the Skyfire KYA sign-in prompt for an already-connected MCP server whose gated tools returned 401. consentGiven=true mints a KYA access token (no reconnect; the live transport uses the stored token on its next request). consentGiven=false records a decline, minting nothing and promptly unblocking any tool call waiting on the consent.",
           }),
         ),
         HttpApiEndpoint.post("payConsent", McpPaths.payConsent, {

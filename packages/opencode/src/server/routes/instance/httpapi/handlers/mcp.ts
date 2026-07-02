@@ -95,7 +95,20 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       params: { name: string }
       query: { consentGiven: boolean }
     }) {
-      if (!ctx.query.consentGiven) return yield* new HttpApiError.BadRequest({})
+      if (!ctx.query.consentGiven) {
+        // Decline: never mints — just unblocks any tool call waiting on this
+        // server's KYA consent so it gates promptly instead of timing out.
+        yield* mcp
+          .kyaDecline(ctx.params.name)
+          .pipe(
+            Effect.catchTag("MCP.NotFoundError", (error) =>
+              Effect.fail(
+                new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
+              ),
+            ),
+          )
+        return false
+      }
       const result = yield* mcp
         .kyaAuthorize(ctx.params.name)
         .pipe(
