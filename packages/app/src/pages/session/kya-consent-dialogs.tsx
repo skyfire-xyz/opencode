@@ -3,7 +3,7 @@ import { onCleanup } from "solid-js"
 import { useDialog } from "@opencode-ai/ui/context"
 import { DialogKyaConsent } from "@/components/dialog-kya-consent"
 
-// Auto-opens the "Sign in with Skyfire KYA" prompt when a gated tool call on a
+// Auto-opens the "Sign in with KYA" prompt when a gated tool call on a
 // KYA-advertising MCP server returns 401 (server emits mcp.kya.consent.required).
 // Approving mints a token via kyaAuthorize without reconnecting; the agent then
 // retries the tool. Declining or dismissing sends consentGiven=false so the

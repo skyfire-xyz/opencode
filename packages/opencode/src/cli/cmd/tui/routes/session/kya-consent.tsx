@@ -7,7 +7,7 @@ import { errorMessage } from "@/util/error"
 import { titleCase } from "../../util/title-case"
 
 // TUI counterpart of packages/app/src/pages/session/kya-consent-dialogs.tsx.
-// Auto-opens the "Sign in with Skyfire KYA" prompt when a gated tool call on a
+// Auto-opens the "Sign in with KYA" prompt when a gated tool call on a
 // KYA-advertising MCP server returns 401 (server emits mcp.kya.consent.required).
 // Confirming mints a token via kyaAuthorize without reconnecting; the agent then
 // retries the tool. Cancelling sends consentGiven=false so the waiting tool call
@@ -30,8 +30,8 @@ export function useKyaConsentDialog() {
 
     void DialogConfirm.show(
       dialog,
-      `Sign in with Skyfire KYA — ${merchant}`,
-      `Authorize a Skyfire KYA token for ${merchant}?`,
+      `Sign in with KYA — ${merchant}`,
+      `Authorize a KYA token for ${merchant}?`,
     ).then(async (ok) => {
       // The X, Esc, or Cancel mints nothing — but it should unblock the tool
       // call waiting on this consent, so tell the server the user declined.

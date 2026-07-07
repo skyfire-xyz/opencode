@@ -105,9 +105,9 @@ function authState() {
 }
 
 /**
- * Localhost/loopback targets don't exist in the Skyfire seller directory, so
- * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
- * domain for the demo so QA mints a valid KYA token against a known seller.
+ * Localhost/loopback targets don't exist in the issuer's seller directory, so
+ * the issuer rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so the issuer mints a valid KYA token against a known seller.
  */
 const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
 
@@ -141,7 +141,7 @@ async function mintKyaAccessToken(input: {
   if (!issuer) {
     return {
       error:
-        'No KYA issuer server found. Add "capabilities": { "org.kyapay:kya": { "tool": "create-kya-token" } } to a configured remote MCP server (e.g. the skyfire server in opencode.jsonc).',
+        'No KYA issuer server found. Add "capabilities": { "org.kyapay:kya": { "tool": "create-kya-token" } } to a configured remote MCP server in opencode.jsonc.',
     }
   }
 
@@ -258,7 +258,7 @@ export const McpListCommand = effectCmd({
         hint = "\n    " + status.error
       } else if (status.status === "needs_kya_consent") {
         statusIcon = "⚠"
-        statusText = "needs Skyfire sign-in"
+        statusText = "needs KYA sign-in"
       } else {
         statusIcon = "✗"
         statusText = "failed"

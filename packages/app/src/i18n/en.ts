@@ -300,7 +300,7 @@ export const dict = {
   "dialog.mcp.description": "{{enabled}} of {{total}} enabled",
   "dialog.mcp.empty": "No MCPs configured",
 
-  "dialog.kyaConsent.title": "Should I use your Skyfire KYA Identity to sign you in to {{name}} MCP server?",
+  "dialog.kyaConsent.title": "Should I use your KYA Identity to sign you in to {{name}} MCP server?",
   "dialog.kyaConsent.yes": "Yes",
   "dialog.kyaConsent.no": "No",
 

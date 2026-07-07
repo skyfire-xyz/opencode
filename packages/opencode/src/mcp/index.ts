@@ -47,7 +47,7 @@ import { Flag } from "@opencode-ai/core/flag/flag"
 const log = Log.create({ service: "mcp" })
 const LOCAL_TARGET_PLACEHOLDER_DOMAIN = "mcp-server.com"
 const DEFAULT_TIMEOUT = 30_000
-// How long a gated tool call waits inline for the user to approve a Skyfire KYA
+// How long a gated tool call waits inline for the user to approve a KYA
 // sign-in (and a fresh token to be stored) before giving up and returning a prompt.
 const KYA_CONSENT_WAIT_MS = 120_000
 const KYA_CONSENT_POLL_MS = 1_500
@@ -84,7 +84,7 @@ export const BrowserOpenFailed = BusEvent.define(
 )
 
 // Emitted when a tool call to a KYA-advertising server returns 401 and the user
-// hasn't signed in yet. The UI reacts by prompting the Skyfire KYA sign-in.
+// hasn't signed in yet. The UI reacts by prompting the KYA sign-in.
 export const KyaConsentRequired = BusEvent.define(
   "mcp.kya.consent.required",
   Schema.Struct({
@@ -194,9 +194,9 @@ function authorizationGrantProfilesSupported(metadata: unknown): string[] {
 }
 
 /**
- * Localhost/loopback targets don't exist in the Skyfire seller directory, so
- * Skyfire rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
- * domain for the demo so QA mints a valid KYA token against a known seller.
+ * Localhost/loopback targets don't exist in the issuer's seller directory, so
+ * the issuer rejects them as a `sellerDomainOrUrl`. Substitute a stable placeholder
+ * domain for the demo so the issuer mints a valid KYA token against a known seller.
  */
 function kyaSellerDomainOrUrl(targetUrl: string): string {
   const host = (() => {
@@ -226,7 +226,7 @@ type KyaMintResult =
   | { minted: false; kyaAdvertised: true; error: string }
 
 /**
- * Detect (without minting) whether an MCP server advertises the Skyfire KYA
+ * Detect (without minting) whether an MCP server advertises the KYA
  * grant profile, following the RFC 9728 → RFC 8414 discovery chain. Used by
  * both the consent gate in `connect()` and `trySilentKya`'s mint preflight.
  */
@@ -242,7 +242,7 @@ async function detectKyaSupport(name: string, serverUrl: string): Promise<KyaSup
   if (!protectedRes.ok) return { supportsKya: false, authServer: undefined }
 
   const protectedJson = (await protectedRes.json()) as any
-  // A protected resource may advertise its own Skyfire seller identity so the
+  // A protected resource may advertise its own seller identity so the
   // KYA token is minted for the right seller without an env override.
   const sellerServiceId =
     typeof protectedJson?.seller_service_id === "string" ? (protectedJson.seller_service_id as string) : undefined
@@ -281,7 +281,7 @@ function trySilentKya(args: {
   issuer: KyaIssuer | undefined
   /**
    * Optional override. When set, OpenCode passes this as `sellerServiceId` to
-   * the configured Skyfire KYA tool. When unset, the seller is derived
+   * the configured KYA issuer tool. When unset, the seller is derived
    * from the target MCP URL and sent as `sellerDomainOrUrl` instead.
    */
   sellerServiceId?: string | undefined
@@ -297,7 +297,7 @@ function trySilentKya(args: {
     log.info("[trySilentKya] KYA auth flow BEGIN", {
       name: args.name,
       url: args.serverUrl,
-      hasSkyfire: !!args.issuer,
+      hasIssuer: !!args.issuer,
     })
 
     const kyaSupport = yield* Effect.tryPromise({
@@ -333,7 +333,7 @@ function trySilentKya(args: {
     }
     const issuer = args.issuer
 
-    log.info("[trySilentKya] connecting to skyfire issuer", {
+    log.info("[trySilentKya] connecting to issuer", {
       name: args.name,
       issuer: issuer.name,
       issuerUrl: issuer.config.url,
@@ -368,7 +368,7 @@ function trySilentKya(args: {
       ? (toolResult as any).content.map((c: any) => c.text ?? "").join("\n")
       : String((toolResult as any).content ?? "")
 
-    log.info("[trySilentKya] skyfire tool response", {
+    log.info("[trySilentKya] issuer tool response", {
       name: args.name,
       textPrefix: text.slice(0, 200),
       length: text.length,
@@ -379,7 +379,7 @@ function trySilentKya(args: {
       return {
         minted: false,
         kyaAdvertised: true,
-        error: "Could not extract JWT assertion from skyfire tool output",
+        error: "Could not extract JWT assertion from issuer tool output",
       } satisfies KyaMintResult
     }
 
@@ -569,7 +569,7 @@ type KyaConsentResolution = { type: "minted" } | { type: "failed"; error: string
 type KyaWaitOutcome = KyaConsentResolution | { type: "timeout" } | { type: "aborted" }
 
 // Hook invoked when a tool call 401s. It decides the outcome:
-//   - retry: a Skyfire sign-in was approved and a fresh token stored → retry inline
+//   - retry: a KYA sign-in was approved and a fresh token stored → retry inline
 //   - gate: sign-in needed but not approved (declined/failed/timed out) → return a prompt result
 //   - passthrough: unrelated 401 (not a KYA server) → rethrow unchanged
 // Throws when the wait is aborted (turn cancelled) so the call exits promptly.
@@ -646,7 +646,7 @@ function convertMcpTool(
                 content: [
                   {
                     type: "text" as const,
-                    text: "The Skyfire sign-in completed but the tool is still unauthorized (the token was rejected). Please check the server's Skyfire configuration.",
+                    text: "The KYA sign-in completed but the tool is still unauthorized (the token was rejected). Please check the server's KYA issuer configuration.",
                   },
                 ],
                 isError: true,
@@ -973,7 +973,7 @@ export const layer = Layer.effect(
 
                   if (kyaSupport.supportsKya) {
                     // Minting a KYA token to access this server requires explicit
-                    // "Sign in with Skyfire KYA" consent. Without it, gate: surface
+                    // "Sign in with KYA" consent. Without it, gate: surface
                     // needs_kya_consent and stop. The retry arrives here with
                     // consented=true once the user confirms in the UI.
                     if (!consented) {
@@ -1310,7 +1310,7 @@ export const layer = Layer.effect(
     const connect = Effect.fn("MCP.connect")(function* (name: string, opts?: { kyaConsent?: boolean }) {
       const mcp = yield* requireMcpConfig(name)
       // KYA detection + consent gating happens in connectRemote at the real 401.
-      // `kyaConsent` carries the user's "Sign in with Skyfire KYA" confirmation:
+      // `kyaConsent` carries the user's "Sign in with KYA" confirmation:
       // false → gate (needs_kya_consent); true → mint + connect.
       yield* createAndStore(name, { ...mcp, enabled: true }, opts?.kyaConsent ?? false)
     })
@@ -1415,7 +1415,7 @@ export const layer = Layer.effect(
             const hasCapabilities = Object.keys(capabilityMap).length > 0
             const gateway = hasCapabilities ? { clients: s.clients, capabilityMap } : undefined
 
-            // For remote servers, gate a tool-call 401 behind a Skyfire sign-in
+            // For remote servers, gate a tool-call 401 behind a KYA sign-in
             // prompt when (and only when) the server advertises KYA. Detection runs
             // lazily — only on an actual 401, not at list time.
             const remoteUrl = entry && isMcpConfigured(entry) && entry.type === "remote" ? entry.url : undefined
@@ -1453,7 +1453,7 @@ export const layer = Layer.effect(
                         log.info("[kya] consent declined by user", { name: clientName })
                         return {
                           action: "gate" as const,
-                          text: `The user declined the Skyfire sign-in for "${clientName}". The tool was not run.`,
+                          text: `The user declined the KYA sign-in for "${clientName}". The tool was not run.`,
                         }
                       case "failed":
                         log.info("[kya] sign-in failed while tool call waited", {
@@ -1462,13 +1462,13 @@ export const layer = Layer.effect(
                         })
                         return {
                           action: "gate" as const,
-                          text: `Skyfire sign-in for "${clientName}" failed: ${outcome.error}`,
+                          text: `KYA sign-in for "${clientName}" failed: ${outcome.error}`,
                         }
                       case "timeout":
                         log.info("[kya] consent not approved within wait window", { name: clientName })
                         return {
                           action: "gate" as const,
-                          text: `Skyfire KYA sign-in for "${clientName}" wasn't approved in time. Approve the Skyfire sign-in prompt, then ask me to retry.`,
+                          text: `KYA sign-in for "${clientName}" wasn't approved in time. Approve the sign-in prompt, then ask me to retry.`,
                         }
                     }
                   },

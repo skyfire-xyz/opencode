@@ -2170,7 +2170,7 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.
+   * Connect an MCP server. Pass kyaConsent=true to confirm a KYA sign-in for a server that requires it.
    */
   public connect<ThrowOnError extends boolean = false>(
     parameters: {
@@ -2202,7 +2202,7 @@ export class Mcp extends HeyApiClient {
   }
 
   /**
-   * Mint a Skyfire KYA access token for an already-connected MCP server whose gated tools returned 401. Does not reconnect; the live transport uses the stored token on its next request.
+   * Resolve the KYA sign-in prompt for an already-connected MCP server whose gated tools returned 401. consentGiven=true mints a KYA access token (no reconnect; the live transport uses the stored token on its next request). consentGiven=false records a decline, minting nothing and promptly unblocking any tool call waiting on the consent.
    */
   public kyaAuthorize<ThrowOnError extends boolean = false>(
     parameters: {

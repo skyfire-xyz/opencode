@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // DEPRECATED — superseded by the two-process mock in `xyz-clothiers-mock/`
 // (mcp-server.js + auth-server.js). That mock is the maintained reference: it
-// uses ES256/JWKS assertion validation per Skyfire's verifyToken example, a
+// uses ES256/JWKS assertion validation per the issuer's verifyToken example, a
 // real 401-on-protected-tool flow, and checkout/pay settlement. This single-file
 // mock is kept only for older references; prefer xyz-clothiers-mock for new work.
 // ---------------------------------------------------------------------------
@@ -27,9 +27,9 @@ const authOrigin = `http://127.0.0.1:${authPort}`
 const mcpOrigin = `http://127.0.0.1:${mcpPort}`
 
 const mockSigningSecret = process.env.MOCK_OAUTH_JWT_SECRET ?? "mock-oauth-dev-secret"
-const skyfireJwksUrl = process.env.MOCK_SKYFIRE_JWKS_URL ?? "https://app-qa.skyfire.xyz/.well-known/jwks.json"
-// Skyfire QA KYA assertions currently use iss=https://app-qa.skyfire.xyz
-const mockSkyfireIssuer = process.env.MOCK_SKYFIRE_ISSUER ?? "https://app-qa.skyfire.xyz"
+const issuerJwksUrl = process.env.MOCK_KYA_ISSUER_JWKS_URL ?? "https://app-qa.skyfire.xyz/.well-known/jwks.json"
+// The reference issuer's QA KYA assertions currently use iss=https://app-qa.skyfire.xyz
+const mockIssuerUrl = process.env.MOCK_KYA_ISSUER_URL ?? "https://app-qa.skyfire.xyz"
 
 type TokenEntry = {
   accessToken: string
@@ -132,14 +132,14 @@ function verifyJwt(token: string, secret: string) {
   }
 }
 
-const skyfireJwks = createRemoteJWKSet(new URL(skyfireJwksUrl))
+const issuerJwks = createRemoteJWKSet(new URL(issuerJwksUrl))
 
 async function verifyKyaAssertion(assertion: string) {
-  // Skyfire QA KYA assertions use a non-URL audience (a UUID-like client ID).
-  // For the demo, we validate signature + iss + exp, and let claim-shape checks
-  // handle the rest.
-  const result = await jwtVerify(assertion, skyfireJwks, {
-    issuer: mockSkyfireIssuer,
+  // The reference issuer's QA KYA assertions use a non-URL audience (a UUID-like
+  // client ID). For the demo, we validate signature + iss + exp, and let
+  // claim-shape checks handle the rest.
+  const result = await jwtVerify(assertion, issuerJwks, {
+    issuer: mockIssuerUrl,
   })
 
   const payload = result.payload as unknown as Record<string, unknown>
@@ -361,8 +361,8 @@ const authServer = http.createServer((req, res) => {
         .then((payload) => {
           const assertionPayload = payload as unknown as Record<string, unknown>
           checkAndRememberAssertionJti(assertionPayload)
-          // Skyfire QA uses aid/hid as objects (not strings). For the demo we just
-          // require they exist and pull a stable identifier from them.
+          // The reference issuer's QA env uses aid/hid as objects (not strings). For
+          // the demo we just require they exist and pull a stable identifier from them.
           const hidObj = (assertionPayload as any).hid
           const aidObj = (assertionPayload as any).aid
           const hidEmail = typeof hidObj?.email === "string" ? hidObj.email : undefined
