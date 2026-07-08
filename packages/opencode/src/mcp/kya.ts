@@ -44,7 +44,7 @@ function kyaCapabilityTool(config: ConfigMCP.Remote): string | undefined {
 }
 
 /**
- * Extract a JWT (the KYA assertion) from the Skyfire issuer tool output, which
+ * Extract a JWT (the KYA assertion) from the issuer tool output, which
  * currently returns a human-readable string like:
  * "Creation of KYA token for <id> is complete: <jwt>".
  */

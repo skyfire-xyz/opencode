@@ -14,7 +14,7 @@ import { QueryBoolean } from "./query"
 import { described } from "./metadata"
 
 // connect accepts an optional `kyaConsent` query flag: the user's
-// "Sign in with Skyfire KYA" confirmation. Without it, a KYA server is gated
+// "Sign in with KYA" confirmation. Without it, a KYA server is gated
 // (needs_kya_consent); with it, the KYA token is minted and the server connects.
 const ConnectQuery = Schema.Struct({
   ...WorkspaceRoutingQueryFields,
@@ -156,19 +156,19 @@ export const McpApi = HttpApi.make("mcp")
           OpenApi.annotations({
             identifier: "mcp.connect",
             description:
-              "Connect an MCP server. Pass kyaConsent=true to confirm a Skyfire KYA sign-in for a server that requires it.",
+              "Connect an MCP server. Pass kyaConsent=true to confirm a KYA sign-in for a server that requires it.",
           }),
         ),
         HttpApiEndpoint.post("kyaAuthorize", McpPaths.kyaAuthorize, {
           params: { name: Schema.String },
           query: KyaAuthorizeQuery,
-          success: described(Schema.Boolean, "Skyfire KYA token minted for the server"),
+          success: described(Schema.Boolean, "KYA token minted for the server"),
           error: [McpServerNotFoundError, HttpApiError.BadRequest],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.kyaAuthorize",
             description:
-              "Resolve the Skyfire KYA sign-in prompt for an already-connected MCP server whose gated tools returned 401. consentGiven=true mints a KYA access token (no reconnect; the live transport uses the stored token on its next request). consentGiven=false records a decline, minting nothing and promptly unblocking any tool call waiting on the consent.",
+              "Resolve the KYA sign-in prompt for an already-connected MCP server whose gated tools returned 401. consentGiven=true mints a KYA access token (no reconnect; the live transport uses the stored token on its next request). consentGiven=false records a decline, minting nothing and promptly unblocking any tool call waiting on the consent.",
           }),
         ),
         HttpApiEndpoint.post("payConsent", McpPaths.payConsent, {

@@ -198,7 +198,7 @@ export interface CapabilityEntry {
   tool: string
   /**
    * The provider's issuer identity: the origin of its configured server url
-   * (e.g. https://mcp-qa.skyfire.xyz/mcp → https://mcp-qa.skyfire.xyz). Only
+   * (e.g. https://issuer.example.com/mcp → https://issuer.example.com). Only
    * remote providers have one; local providers leave this undefined.
    */
   issuer?: string

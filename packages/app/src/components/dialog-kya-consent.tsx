@@ -10,8 +10,8 @@ import { useLanguage } from "@/context/language"
 import { useQueryOptions } from "@/context/server-sync"
 import { pathKey } from "@/utils/path-key"
 
-// Consent gate for "Sign in with Skyfire KYA". The server has been detected as
-// supporting the Skyfire KYA grant profile (status needs_kya_consent); confirming
+// Consent gate for "Sign in with KYA". The server has been detected as
+// supporting the KYA grant profile (status needs_kya_consent); confirming
 // mints + exchanges the token.
 //   - mode "connect" (default): the server isn't connected yet (connect-time
 //     401) — re-run connect with kyaConsent=true, which mints AND connects.

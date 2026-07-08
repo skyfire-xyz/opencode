@@ -5393,7 +5393,7 @@ export type McpKyaAuthorizeError = McpKyaAuthorizeErrors[keyof McpKyaAuthorizeEr
 
 export type McpKyaAuthorizeResponses = {
   /**
-   * Skyfire KYA token minted for the server
+   * KYA token minted for the server
    */
   200: boolean
 }
